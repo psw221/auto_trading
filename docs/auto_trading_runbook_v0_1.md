@@ -361,6 +361,7 @@ python scripts/generate_holiday_calendar.py --year 2026 --output data/krx_holida
 참고 문서:
 
 - [`docs/auto_trading_real_ops_checklist_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_real_ops_checklist_v0_1.md)
+- [`docs/auto_trading_manual_intervention_runbook_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_manual_intervention_runbook_v0_1.md)
 
 ---
 
@@ -368,7 +369,6 @@ python scripts/generate_holiday_calendar.py --year 2026 --output data/krx_holida
 
 현재 시점에서 운영 관점의 다음 우선순위는 아래와 같다.
 
-1. 장애 시 수동 개입 runbook 상세화
-2. 작업 스케줄러 또는 서비스 등록 가이드 추가
-3. 운영 대시보드 출력 확장
-4. 실전 첫날 운영 회고 템플릿 추가
+1. 작업 스케줄러 또는 서비스 등록 가이드 추가
+2. 운영 대시보드 출력 확장
+3. 실전 첫날 운영 회고 템플릿 추가
