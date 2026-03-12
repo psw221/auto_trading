@@ -1,0 +1,19 @@
+{
+  "header": {
+    "tr_id": "H0STCNI9"
+  },
+  "body": {
+    "output": {
+      "CNTG_YN": "2",
+      "RFUS_YN": "N",
+      "ACPT_YN": "Y",
+      "ODNO": "12345",
+      "PDNO": "005930",
+      "SLL_BUY_DVSN_CD": "02",
+      "CNTG_QTY": "3",
+      "CNTG_UNPR": "70000",
+      "ORD_TMD": "091501",
+      "MSG1": ""
+    }
+  }
+}

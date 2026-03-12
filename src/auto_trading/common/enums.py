@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class PositionStatus(StrEnum):
+    READY = "READY"
+    OPENING = "OPENING"
+    OPEN = "OPEN"
+    CLOSING = "CLOSING"
+    CLOSED = "CLOSED"
+    ERROR = "ERROR"
+
+
+class OrderStatus(StrEnum):
+    PENDING_CREATE = "PENDING_CREATE"
+    SUBMITTED = "SUBMITTED"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    PENDING_REPLACE = "PENDING_REPLACE"
+    REPLACED = "REPLACED"
+    PENDING_CANCEL = "PENDING_CANCEL"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
