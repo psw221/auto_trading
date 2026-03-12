@@ -32,8 +32,8 @@
 
 장애 유형과 무관하게 아래 순서로 시작한다.
 
-1. [`scripts/status_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/status_auto_trading.ps1)로 프로세스 상태 확인
-2. [`scripts/show_auto_trading_dashboard.ps1`](/c:/Dev/Python/auto_trading/scripts/show_auto_trading_dashboard.ps1)로 최근 `ERROR/CRITICAL` 이벤트 확인
+1. [`scripts/status_auto_trading.ps1`](../scripts/status_auto_trading.ps1)로 프로세스 상태 확인
+2. [`scripts/show_auto_trading_dashboard.ps1`](../scripts/show_auto_trading_dashboard.ps1)로 최근 `ERROR/CRITICAL` 이벤트 확인
 3. 자동매매가 계속 실행 중이면 신규 주문 차단 상태인지 확인
 4. 브로커 계좌 기준으로 `보유`, `미체결`, `당일 체결`을 확인
 5. 수동 개입 기록을 남긴다
@@ -104,7 +104,7 @@
 절차:
 
 1. 브로커 보유 종목 조회
-2. 로컬 [`positions`](/c:/Dev/Python/auto_trading/src/auto_trading/portfolio/models.py)와 비교
+2. 로컬 [`positions`](../src/auto_trading/portfolio/models.py)와 비교
 3. 주문/체결 이력 조회
 4. 아래 기준으로 수동 판단
 
@@ -150,7 +150,7 @@
 
 이 경우:
 
-1. [`scripts/stop_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/stop_auto_trading.ps1)로 중지
+1. [`scripts/stop_auto_trading.ps1`](../scripts/stop_auto_trading.ps1)로 중지
 2. 브로커 기준 미체결과 보유를 수동 점검
 3. 원인 파악 전 재기동 금지
 
@@ -208,7 +208,7 @@
 2. `UNKNOWN` 주문 존재 여부 확인
 3. dashboard로 최근 `ERROR/CRITICAL` 확인
 4. 필요 시 `python -m auto_trading --once --no-startup-recovery`로 기초 점검
-5. 정상 판단 시 [`scripts/start_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/start_auto_trading.ps1) 실행
+5. 정상 판단 시 [`scripts/start_auto_trading.ps1`](../scripts/start_auto_trading.ps1) 실행
 6. 재시작 직후 quote/order notice 수신과 dashboard 상태를 다시 확인
 
 ---
@@ -263,5 +263,5 @@ pwsh -File scripts/start_auto_trading.ps1
 
 # 8. 관련 문서
 
-- [`docs/auto_trading_runbook_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_runbook_v0_1.md)
-- [`docs/auto_trading_real_ops_checklist_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_real_ops_checklist_v0_1.md)
+- [`docs/auto_trading_runbook_v0_1.md`](./auto_trading_runbook_v0_1.md)
+- [`docs/auto_trading_real_ops_checklist_v0_1.md`](./auto_trading_real_ops_checklist_v0_1.md)

@@ -21,12 +21,12 @@
 
 현재 시스템은 아래 실행 진입점을 제공한다.
 
-- [`python -m auto_trading`](/c:/Dev/Python/auto_trading/src/auto_trading/__main__.py)
+- [`python -m auto_trading`](../src/auto_trading/__main__.py)
 - `python -m auto_trading --once --no-startup-recovery`
-- [`scripts/start_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/start_auto_trading.ps1)
-- [`scripts/stop_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/stop_auto_trading.ps1)
-- [`scripts/status_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/status_auto_trading.ps1)
-- [`scripts/show_auto_trading_dashboard.ps1`](/c:/Dev/Python/auto_trading/scripts/show_auto_trading_dashboard.ps1)
+- [`scripts/start_auto_trading.ps1`](../scripts/start_auto_trading.ps1)
+- [`scripts/stop_auto_trading.ps1`](../scripts/stop_auto_trading.ps1)
+- [`scripts/status_auto_trading.ps1`](../scripts/status_auto_trading.ps1)
+- [`scripts/show_auto_trading_dashboard.ps1`](../scripts/show_auto_trading_dashboard.ps1)
 
 권장 원칙:
 
@@ -65,13 +65,13 @@ powershell.exe
 인수:
 
 ```text
--ExecutionPolicy Bypass -File "C:\Dev\Python\auto_trading\scripts\start_auto_trading.ps1"
+-ExecutionPolicy Bypass -File "%REPO_ROOT%\scripts\start_auto_trading.ps1"
 ```
 
 시작 위치:
 
 ```text
-C:\Dev\Python\auto_trading
+%REPO_ROOT%
 ```
 
 주의:
@@ -90,7 +90,7 @@ powershell.exe
 인수:
 
 ```text
--ExecutionPolicy Bypass -File "C:\Dev\Python\auto_trading\scripts\stop_auto_trading.ps1"
+-ExecutionPolicy Bypass -File "%REPO_ROOT%\scripts\stop_auto_trading.ps1"
 ```
 
 ## 3.4 주기 상태 점검 작업
@@ -104,7 +104,7 @@ powershell.exe
 인수:
 
 ```text
--ExecutionPolicy Bypass -File "C:\Dev\Python\auto_trading\scripts\show_auto_trading_dashboard.ps1"
+-ExecutionPolicy Bypass -File "%REPO_ROOT%\scripts\show_auto_trading_dashboard.ps1"
 ```
 
 용도:
@@ -172,10 +172,10 @@ powershell.exe
 
 오케스트레이터에서 직접 호출하기 좋은 대상은 아래다.
 
-- [`scripts/start_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/start_auto_trading.ps1)
-- [`scripts/stop_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/stop_auto_trading.ps1)
-- [`scripts/status_auto_trading.ps1`](/c:/Dev/Python/auto_trading/scripts/status_auto_trading.ps1)
-- [`scripts/show_auto_trading_dashboard.ps1`](/c:/Dev/Python/auto_trading/scripts/show_auto_trading_dashboard.ps1)
+- [`scripts/start_auto_trading.ps1`](../scripts/start_auto_trading.ps1)
+- [`scripts/stop_auto_trading.ps1`](../scripts/stop_auto_trading.ps1)
+- [`scripts/status_auto_trading.ps1`](../scripts/status_auto_trading.ps1)
+- [`scripts/show_auto_trading_dashboard.ps1`](../scripts/show_auto_trading_dashboard.ps1)
 
 운영 패턴 예시:
 
@@ -252,6 +252,6 @@ powershell.exe
 
 # 9. 운영 문서 연결
 
-- [`docs/auto_trading_runbook_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_runbook_v0_1.md)
-- [`docs/auto_trading_manual_intervention_runbook_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_manual_intervention_runbook_v0_1.md)
-- [`docs/auto_trading_real_ops_checklist_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_real_ops_checklist_v0_1.md)
+- [`docs/auto_trading_runbook_v0_1.md`](./auto_trading_runbook_v0_1.md)
+- [`docs/auto_trading_manual_intervention_runbook_v0_1.md`](./auto_trading_manual_intervention_runbook_v0_1.md)
+- [`docs/auto_trading_real_ops_checklist_v0_1.md`](./auto_trading_real_ops_checklist_v0_1.md)

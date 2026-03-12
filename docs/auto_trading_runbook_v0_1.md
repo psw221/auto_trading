@@ -35,7 +35,7 @@
 
 현재 제한 사항:
 
-- [`python -m auto_trading`](/c:/Dev/Python/auto_trading/src/auto_trading/__main__.py)는 정식 엔트리포인트로 동작한다.
+- [`python -m auto_trading`](../src/auto_trading/__main__.py)는 정식 엔트리포인트로 동작한다.
 - Windows PowerShell용 launcher 스크립트는 제공되지만, 작업 스케줄러/서비스 등록 자동화는 아직 없다.
 - 운영 로그 조회 대시보드와 자동 재시작 정책은 아직 없다.
 
@@ -50,9 +50,9 @@
 
 ## 3.1 필수 파일
 
-- [`.env`](/c:/Dev/Python/auto_trading/.env)
-- [`data/universe_master.csv`](/c:/Dev/Python/auto_trading/data/universe_master.csv)
-- [`data/krx_holidays.csv`](/c:/Dev/Python/auto_trading/data/krx_holidays.csv)
+- [`.env`](../.env)
+- [`data/universe_master.csv`](../data/universe_master.csv)
+- [`data/krx_holidays.csv`](../data/krx_holidays.csv)
 
 ## 3.2 필수 환경값
 
@@ -360,9 +360,9 @@ python scripts/generate_holiday_calendar.py --year 2026 --output data/krx_holida
 
 참고 문서:
 
-- [`docs/auto_trading_real_ops_checklist_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_real_ops_checklist_v0_1.md)
-- [`docs/auto_trading_manual_intervention_runbook_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_manual_intervention_runbook_v0_1.md)
-- [`docs/auto_trading_scheduler_and_orchestrator_guide_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_scheduler_and_orchestrator_guide_v0_1.md)
+- [`docs/auto_trading_real_ops_checklist_v0_1.md`](./auto_trading_real_ops_checklist_v0_1.md)
+- [`docs/auto_trading_manual_intervention_runbook_v0_1.md`](./auto_trading_manual_intervention_runbook_v0_1.md)
+- [`docs/auto_trading_scheduler_and_orchestrator_guide_v0_1.md`](./auto_trading_scheduler_and_orchestrator_guide_v0_1.md)
 
 ---
 
