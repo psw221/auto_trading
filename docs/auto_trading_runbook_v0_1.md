@@ -161,6 +161,12 @@ python scripts/generate_universe_master.py
 - 동일 종목 중복 포지션이 없는지 확인
 - 장중 신규 주문 차단 여부가 fail-safe로 걸리지 않았는지 확인
 
+권장 조회 명령:
+
+```powershell
+pwsh -File scripts/show_auto_trading_dashboard.ps1
+```
+
 우선 확인 대상 이벤트:
 
 - `broker_exception`
@@ -272,31 +278,37 @@ pwsh -File scripts/start_auto_trading.ps1
 pwsh -File scripts/stop_auto_trading.ps1
 ```
 
-## 9.5 단일 cycle 실행
+## 9.5 대시보드 조회
+
+```powershell
+pwsh -File scripts/show_auto_trading_dashboard.ps1
+```
+
+## 9.6 단일 cycle 실행
 
 ```powershell
 python -m auto_trading --once --no-startup-recovery
 ```
 
-## 9.6 일반 실행
+## 9.7 일반 실행
 
 ```powershell
 python -m auto_trading
 ```
 
-## 9.7 문법 확인
+## 9.8 문법 확인
 
 ```powershell
 python -m compileall src tests
 ```
 
-## 9.8 유니버스 마스터 생성
+## 9.9 유니버스 마스터 생성
 
 ```powershell
 python scripts/generate_universe_master.py
 ```
 
-## 9.9 휴장일 파일 생성
+## 9.10 휴장일 파일 생성
 
 ```powershell
 python scripts/generate_holiday_calendar.py --year 2026 --output data/krx_holidays.csv
@@ -352,7 +364,7 @@ python scripts/generate_holiday_calendar.py --year 2026 --output data/krx_holida
 
 현재 시점에서 운영 관점의 다음 우선순위는 아래와 같다.
 
-1. 운영 로그 조회 명령 또는 대시보드 스크립트 추가
-2. 실전 전환 checklist 문서 추가
-3. 장애 시 수동 개입 runbook 상세화
-4. 작업 스케줄러 또는 서비스 등록 가이드 추가
+1. 실전 전환 checklist 문서 추가
+2. 장애 시 수동 개입 runbook 상세화
+3. 작업 스케줄러 또는 서비스 등록 가이드 추가
+4. 운영 대시보드 출력 확장

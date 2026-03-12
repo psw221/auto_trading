@@ -74,6 +74,12 @@ python -m auto_trading --once --no-startup-recovery
 pwsh -File scripts/status_auto_trading.ps1
 ```
 
+대시보드 조회:
+
+```powershell
+pwsh -File scripts/show_auto_trading_dashboard.ps1
+```
+
 시작:
 
 ```powershell
