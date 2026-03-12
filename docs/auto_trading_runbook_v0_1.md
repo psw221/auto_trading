@@ -358,13 +358,17 @@ python scripts/generate_holiday_calendar.py --year 2026 --output data/krx_holida
 - 실전 계좌 최소 수량 검증
 - 재시작 복구 리허설 완료
 
+참고 문서:
+
+- [`docs/auto_trading_real_ops_checklist_v0_1.md`](/c:/Dev/Python/auto_trading/docs/auto_trading_real_ops_checklist_v0_1.md)
+
 ---
 
 # 12. 현재 권장 다음 작업
 
 현재 시점에서 운영 관점의 다음 우선순위는 아래와 같다.
 
-1. 실전 전환 checklist 문서 추가
-2. 장애 시 수동 개입 runbook 상세화
-3. 작업 스케줄러 또는 서비스 등록 가이드 추가
-4. 운영 대시보드 출력 확장
+1. 장애 시 수동 개입 runbook 상세화
+2. 작업 스케줄러 또는 서비스 등록 가이드 추가
+3. 운영 대시보드 출력 확장
+4. 실전 첫날 운영 회고 템플릿 추가

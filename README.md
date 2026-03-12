@@ -107,6 +107,7 @@ pwsh -File scripts/stop_auto_trading.ps1
 
 - 기술명세서: `docs/auto_trading_technical_spec_v0_1.md`
 - 운영 runbook: `docs/auto_trading_runbook_v0_1.md`
+- 실전 전환 checklist: `docs/auto_trading_real_ops_checklist_v0_1.md`
 
 ## 6. 다른 PC에서 실행할 때 체크할 것
 
