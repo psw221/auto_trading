@@ -91,6 +91,31 @@ class TelegramNotifierTest(unittest.TestCase):
         self.assertIn("사유: 전략 진입", row["message"])
         self.assertIn("주문 진행: 1/3주 체결", row["message"])
 
+    def test_send_target_scores_posts_to_telegram(self) -> None:
+        notifier = TelegramNotifier(
+            _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
+            self.system_events,
+        )
+        with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
+            notifier.send_target_scores(
+                {
+                    "snapshot_time": "2026-03-13T10:30:00+09:00",
+                    "items": [
+                        {"symbol": "005930", "score_total": 92, "price": 71000},
+                        {"symbol": "069500", "score_total": 88, "price": 35000},
+                    ],
+                }
+            )
+        mocked.assert_called_once()
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT event_type, message FROM system_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual("target_scores_notification_sent", row["event_type"])
+        self.assertIn("타겟 점수 TOP 10", row["message"])
+        self.assertIn("Samsung Electronics (005930)", row["message"])
+        self.assertIn("점수 92", row["message"])
+
     def test_send_system_event_skips_when_credentials_missing(self) -> None:
         notifier = TelegramNotifier(_build_settings(token="", chat_id=""), self.system_events)
         notifier.send_system_event({"message": "stream disconnected", "severity": "ERROR", "component": "runtime"})

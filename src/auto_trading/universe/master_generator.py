@@ -11,11 +11,44 @@ from urllib import error, request
 
 GITHUB_CONTENTS_API = "https://api.github.com/repos/koreainvestment/open-trading-api/contents/stocks_info"
 KOSPI_MASTER_ZIP_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
+KOSPI_FIELD_SPECS = [
+    2, 1, 4, 4, 4,
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+    1, 9, 5, 5, 1,
+    1, 1, 2, 1, 1,
+    1, 2, 2, 2, 3,
+    1, 3, 12, 12, 8,
+    15, 21, 2, 7, 1,
+    1, 1, 1, 1, 9,
+    9, 9, 5, 9, 8,
+    9, 3, 1, 1, 1,
+]
+KOSPI_PART2_COLUMNS = [
+    '그룹코드', '시가총액규모', '지수업종대분류', '지수업종중분류', '지수업종소분류',
+    '제조업', '저유동성', '지배구조지수종목', 'KOSPI200섹터업종', 'KOSPI100',
+    'KOSPI50', 'KRX', 'ETP', 'ELW발행', 'KRX100',
+    'KRX자동차', 'KRX반도체', 'KRX바이오', 'KRX은행', 'SPAC',
+    'KRX에너지화학', 'KRX철강', '단기과열', 'KRX미디어통신', 'KRX건설',
+    'Non1', 'KRX증권', 'KRX선박', 'KRX섹터_보험', 'KRX섹터_운송',
+    'SRI', '기준가', '매매수량단위', '시간외수량단위', '거래정지',
+    '정리매매', '관리종목', '시장경고', '경고예고', '불성실공시',
+    '우회상장', '락구분', '액면변경', '증자구분', '증거금비율',
+    '신용가능', '신용기간', '전일거래량', '액면가', '상장일자',
+    '상장주수', '자본금', '결산월', '공모가', '우선주',
+    '공매도과열', '이상급등', 'KRX300', 'KOSPI200', '매출액',
+    '영업이익', '경상이익', '당기순이익', 'ROE', '기준년월',
+    '시가총액', '그룹사코드', '회사신용한도초과', '담보대출가능', '대주가능',
+]
 
 SYMBOL_KEYS = ("symbol", "code", "short_code", "단축코드", "종목코드", "표준코드")
 NAME_KEYS = ("name", "name_kr", "한글명", "종목명", "한글종목명")
 MARKET_KEYS = ("market", "market_name", "시장구분", "시장명")
 ASSET_TYPE_KEYS = ("asset_type", "type", "상품구분", "자산구분", "증권구분")
+KOSPI200_KEYS = ("kospi200", "KOSPI200", "코스피200")
 
 
 @dataclass(slots=True)
@@ -24,6 +57,7 @@ class MasterRow:
     name: str
     market: str
     asset_type: str
+    kospi200: bool = False
 
 
 def generate_master_csv(
@@ -40,25 +74,19 @@ def generate_master_csv(
         official_sources = discover_official_sources()
         for source in official_sources:
             for row in load_source_rows(source):
-                if not row.symbol:
-                    continue
-                if not is_supported_row(row):
+                if not row.symbol or not is_supported_row(row):
                     continue
                 rows[row.symbol] = row
                 official_rows_found = True
         if not official_rows_found:
             for row in load_official_master_rows():
-                if not row.symbol:
-                    continue
-                if not is_supported_row(row):
+                if not row.symbol or not is_supported_row(row):
                     continue
                 rows[row.symbol] = row
 
     for source in explicit_sources:
         for row in load_source_rows(source):
-            if not row.symbol:
-                continue
-            if not is_supported_row(row):
+            if not row.symbol or not is_supported_row(row):
                 continue
             rows[row.symbol] = row
 
@@ -106,11 +134,22 @@ def load_remote_kospi_master_rows() -> list[MasterRow]:
         if not line:
             continue
         left = line[:-228] if len(line) > 228 else line
+        tail = line[-228:] if len(line) > 228 else ''
         symbol = clean_symbol(left[:9].rstrip())
         name = left[21:].strip() if len(left) > 21 else ''
         if not symbol or not name:
             continue
-        rows.append(MasterRow(symbol=symbol, name=name, market='KOSPI', asset_type='STOCK'))
+        fields = split_fixed_width(tail, KOSPI_FIELD_SPECS)
+        part2 = {column: fields[index].strip() if index < len(fields) else '' for index, column in enumerate(KOSPI_PART2_COLUMNS)}
+        rows.append(
+            MasterRow(
+                symbol=symbol,
+                name=name,
+                market='KOSPI',
+                asset_type='STOCK',
+                kospi200=parse_bool_flag(part2.get('KOSPI200', '')),
+            )
+        )
     return rows
 
 
@@ -125,14 +164,15 @@ def load_source_rows(source: str) -> list[MasterRow]:
         name = pick_value(raw, NAME_KEYS).strip()
         market = normalize_market(pick_value(raw, MARKET_KEYS), inferred_market)
         asset_type = normalize_asset_type(pick_value(raw, ASSET_TYPE_KEYS), inferred_asset_type)
-        rows.append(MasterRow(symbol=symbol, name=name, market=market, asset_type=asset_type))
+        kospi200 = parse_bool_flag(pick_value(raw, KOSPI200_KEYS))
+        rows.append(MasterRow(symbol=symbol, name=name, market=market, asset_type=asset_type, kospi200=kospi200))
     return rows
 
 
 def write_master_csv(path: Path, rows: Iterable[MasterRow]) -> None:
     sorted_rows = sorted(rows, key=lambda row: (row.market, row.asset_type, row.symbol))
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["symbol", "name", "market", "asset_type"])
+        writer = csv.DictWriter(handle, fieldnames=["symbol", "name", "market", "asset_type", "kospi200"])
         writer.writeheader()
         for row in sorted_rows:
             writer.writerow(
@@ -141,6 +181,7 @@ def write_master_csv(path: Path, rows: Iterable[MasterRow]) -> None:
                     "name": row.name,
                     "market": row.market,
                     "asset_type": row.asset_type,
+                    "kospi200": "Y" if row.kospi200 else "N",
                 }
             )
 
@@ -185,6 +226,20 @@ def pick_value(row: dict[str, str], aliases: tuple[str, ...]) -> str:
     return ""
 
 
+def split_fixed_width(text: str, widths: list[int]) -> list[str]:
+    fields: list[str] = []
+    cursor = 0
+    for width in widths:
+        fields.append(text[cursor:cursor + width])
+        cursor += width
+    return fields
+
+
+def parse_bool_flag(value: str) -> bool:
+    normalized = value.strip().upper()
+    return normalized not in {"", "0", "N", "NO", "FALSE"}
+
+
 def clean_symbol(value: str) -> str:
     digits = "".join(char for char in value if char.isdigit())
     return digits.zfill(6) if digits else ""
@@ -227,4 +282,4 @@ def infer_asset_type_from_source(source: str) -> str:
 
 
 def is_supported_row(row: MasterRow) -> bool:
-    return row.market == "KOSPI" or row.asset_type == "ETF"
+    return row.market == "KOSPI"

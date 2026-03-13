@@ -156,7 +156,7 @@ class FixtureBasedTests(unittest.TestCase):
     def test_universe_builder_filters_fixture_rows_by_prd(self) -> None:
         builder = UniverseBuilder(KISClientStub())
         items = builder.rebuild(__import__("datetime").datetime.now())
-        self.assertEqual(["005930", "069500"], [item.symbol for item in items])
+        self.assertEqual(["005930"], [item.symbol for item in items])
 
 
 if __name__ == "__main__":

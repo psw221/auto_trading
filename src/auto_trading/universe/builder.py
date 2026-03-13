@@ -8,6 +8,7 @@ from pathlib import Path
 MIN_PRICE = 3000.0
 MIN_AVG_TURNOVER = 5_000_000_000.0
 MAX_UNIVERSE_SIZE = 50
+CURRENT_UNIVERSE_FILENAME = 'current_universe.csv'
 
 
 @dataclass(slots=True)
@@ -18,6 +19,7 @@ class UniverseItem:
     asset_type: str = ""
     price: float = 0.0
     avg_turnover_20d: float = 0.0
+    kospi200: bool = False
 
 
 @dataclass(slots=True)
@@ -44,13 +46,62 @@ class UniverseBuilder:
                     asset_type=item.asset_type,
                     price=current["price"],
                     avg_turnover_20d=avg_turnover,
+                    kospi200=item.kospi200,
                 )
             )
 
         filtered.sort(key=lambda item: item.avg_turnover_20d, reverse=True)
         selected = filtered[:MAX_UNIVERSE_SIZE]
         self.symbols = [item.symbol for item in selected]
+        self.save_current_universe(selected)
         return selected
+
+    def load_current_universe(self) -> list[UniverseItem]:
+        path = self._resolve_current_universe_path()
+        if not path.exists():
+            return []
+        items: list[UniverseItem] = []
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                symbol = (row.get("symbol") or "").strip()
+                if not symbol:
+                    continue
+                items.append(
+                    UniverseItem(
+                        symbol=symbol,
+                        name=(row.get("name") or "").strip(),
+                        market=(row.get("market") or "").strip().upper(),
+                        asset_type=(row.get("asset_type") or "").strip().upper(),
+                        price=self._to_float(row.get("price")),
+                        avg_turnover_20d=self._to_float(row.get("avg_turnover_20d")),
+                        kospi200=self._parse_bool_flag(row.get("kospi200")),
+                    )
+                )
+        self.symbols = [item.symbol for item in items]
+        return items
+
+    def save_current_universe(self, items: list[UniverseItem]) -> None:
+        path = self._resolve_current_universe_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=["symbol", "name", "market", "asset_type", "price", "avg_turnover_20d", "kospi200"],
+            )
+            writer.writeheader()
+            for item in items:
+                writer.writerow(
+                    {
+                        "symbol": item.symbol,
+                        "name": item.name,
+                        "market": item.market,
+                        "asset_type": item.asset_type,
+                        "price": item.price,
+                        "avg_turnover_20d": item.avg_turnover_20d,
+                        "kospi200": "Y" if item.kospi200 else "N",
+                    }
+                )
 
     def _load_master_items(self) -> list[UniverseItem]:
         path = self._resolve_master_path()
@@ -62,7 +113,8 @@ class UniverseBuilder:
             for row in reader:
                 market = (row.get("market") or "").strip().upper()
                 asset_type = (row.get("asset_type") or "").strip().upper()
-                if not self._is_supported_asset(market, asset_type):
+                kospi200 = self._parse_bool_flag(row.get("kospi200"))
+                if not self._is_supported_asset(market, asset_type, kospi200):
                     continue
                 symbol = (row.get("symbol") or "").strip()
                 if not symbol:
@@ -73,6 +125,7 @@ class UniverseBuilder:
                         name=(row.get("name") or "").strip(),
                         market=market,
                         asset_type=asset_type,
+                        kospi200=kospi200,
                     )
                 )
         return items
@@ -82,6 +135,9 @@ class UniverseBuilder:
         if isinstance(configured, Path):
             return configured
         return Path("./data/universe_master.csv")
+
+    def _resolve_current_universe_path(self) -> Path:
+        return self._resolve_master_path().with_name(CURRENT_UNIVERSE_FILENAME)
 
     @staticmethod
     def _average_turnover(history: list[dict[str, float]]) -> float:
@@ -93,5 +149,19 @@ class UniverseBuilder:
         return sum(turnovers) / len(turnovers)
 
     @staticmethod
-    def _is_supported_asset(market: str, asset_type: str) -> bool:
-        return market == "KOSPI" or asset_type == "ETF"
+    def _is_supported_asset(market: str, asset_type: str, kospi200: bool) -> bool:
+        return market == "KOSPI" and asset_type != "ETF" and kospi200
+
+    @staticmethod
+    def _parse_bool_flag(value: object) -> bool:
+        text = str(value or "").strip().upper()
+        if text == "":
+            return True
+        return text not in {"0", "N", "NO", "FALSE"}
+
+    @staticmethod
+    def _to_float(value: object) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0

@@ -77,6 +77,21 @@ class DashboardSummaryTest(unittest.TestCase):
             )
             connection.execute(
                 """
+                INSERT INTO system_events (
+                    event_type, severity, component, message, payload_json, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "market_scan_summary",
+                    "INFO",
+                    "scheduler",
+                    "Recorded latest market scan summary.",
+                    '{"universe_count": 50, "scored_count": 18, "qualified_count": 3, "top_candidate_count": 10, "snapshot_time": "2026-03-13T00:20:00+00:00"}',
+                    "2026-03-13T00:20:00+00:00",
+                ),
+            )
+            connection.execute(
+                """
                 INSERT INTO strategy_snapshots (
                     symbol, snapshot_time, score_total, volume_score, momentum_score, ma_score,
                     atr_score, rsi_score, price, ma5, ma20, rsi, atr, metadata_json, created_at
@@ -111,8 +126,12 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertEqual(1, len(summary.recent_errors))
         self.assertEqual(1, len(summary.today_targets))
         self.assertEqual("Samsung Electronics", summary.today_targets[0]["name"])
+        self.assertEqual(50, summary.latest_market_scan["universe_count"])
+        self.assertEqual(18, summary.latest_market_scan["scored_count"])
         rendered = format_dashboard_summary(summary, db_path)
         self.assertIn("active_positions=1", rendered)
+        self.assertIn("[latest_market_scan]", rendered)
+        self.assertIn("qualified_count=3", rendered)
         self.assertIn("[today_targets]", rendered)
         self.assertIn("Samsung Electronics", rendered)
         targets_summary = build_strategy_targets_summary(db_path, master_path, now=now)

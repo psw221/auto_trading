@@ -28,6 +28,8 @@ class SchedulerService:
     recovery_service: object
     fail_safe_monitor: FailSafeMonitor
     trading_calendar: TradingCalendar
+    notifier: object | None = None
+    system_events_repository: object | None = None
     strategy_snapshots_repository: object | None = None
     quote_subscription_updater: object | None = None
     universe_master_refresher: object | None = None
@@ -37,6 +39,7 @@ class SchedulerService:
     _last_pre_market_run_date: str | None = field(init=False, default=None)
     _last_post_market_run_date: str | None = field(init=False, default=None)
     _last_market_scan_at: datetime | None = field(init=False, default=None)
+    _last_target_scores_signature: tuple[tuple[str, int, float], ...] = field(init=False, default_factory=tuple)
 
     def run_forever(self) -> None:
         while True:
@@ -69,6 +72,15 @@ class SchedulerService:
         if self.fail_safe_monitor.should_block_new_orders():
             self.order_engine.reconcile_unknown_orders()
             return
+        self._ensure_market_universe_ready()
+        if not self.universe_builder.symbols:
+            self._record_market_scan_summary(
+                universe_count=0,
+                scored_count=0,
+                qualified_count=0,
+                top_candidate_count=0,
+            )
+            return
 
         portfolio = self.portfolio_service.snapshot()
         for position in portfolio.open_positions:
@@ -94,14 +106,25 @@ class SchedulerService:
                 self.order_engine.submit_exit(exit_signal, position)
 
         candidates = []
+        scored_count = 0
+        qualified_count = 0
         for symbol in self.universe_builder.symbols:
             bars = self.market_data_collector.get_recent_bars(symbol, 30)
             if len(bars) < 20:
                 continue
+            scored_count += 1
             score = self.strategy_scorer.score(bars)
             if score.score_total >= 70:
+                qualified_count += 1
                 self._save_strategy_snapshot(score)
             candidates.append(score)
+        self._record_market_scan_summary(
+            universe_count=len(self.universe_builder.symbols),
+            scored_count=scored_count,
+            qualified_count=qualified_count,
+            top_candidate_count=min(len(candidates), 10),
+        )
+        self._send_top_candidate_scores(candidates)
         portfolio = self.portfolio_service.snapshot()
         for signal in self.signal_engine.evaluate_entry(candidates):
             decision = self.risk_engine.can_enter(signal, portfolio)
@@ -166,6 +189,69 @@ class SchedulerService:
             return
         try:
             self.strategy_snapshots_repository.create(score)
+        except Exception:
+            return
+
+    def _ensure_market_universe_ready(self) -> None:
+        if self.universe_builder.symbols:
+            return
+        try:
+            items = self.universe_builder.load_current_universe()
+            if not items:
+                items = self.universe_builder.rebuild(datetime.now())
+        except Exception:
+            return
+        self._update_quote_subscriptions([item.symbol for item in items])
+
+    def _record_market_scan_summary(
+        self,
+        *,
+        universe_count: int,
+        scored_count: int,
+        qualified_count: int,
+        top_candidate_count: int,
+    ) -> None:
+        if self.system_events_repository is None:
+            return
+        try:
+            self.system_events_repository.create(
+                event_type="market_scan_summary",
+                severity="INFO",
+                component="scheduler",
+                message="Recorded latest market scan summary.",
+                payload={
+                    "universe_count": universe_count,
+                    "scored_count": scored_count,
+                    "qualified_count": qualified_count,
+                    "top_candidate_count": top_candidate_count,
+                    "snapshot_time": datetime.now().isoformat(),
+                },
+            )
+        except Exception:
+            return
+
+    def _send_top_candidate_scores(self, candidates: list[object]) -> None:
+        if self.notifier is None or not candidates:
+            return
+        ranked = sorted(candidates, key=lambda item: item.score_total, reverse=True)[:10]
+        signature = tuple((item.symbol, int(item.score_total), float(item.price)) for item in ranked)
+        if signature == self._last_target_scores_signature:
+            return
+        try:
+            self.notifier.send_target_scores(
+                {
+                    "snapshot_time": datetime.now().isoformat(),
+                    "items": [
+                        {
+                            "symbol": item.symbol,
+                            "score_total": item.score_total,
+                            "price": item.price,
+                        }
+                        for item in ranked
+                    ],
+                }
+            )
+            self._last_target_scores_signature = signature
         except Exception:
             return
 

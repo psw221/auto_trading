@@ -23,6 +23,7 @@ class DashboardSummary:
     recent_orders: list[dict[str, object]]
     recent_errors: list[dict[str, object]]
     today_targets: list[dict[str, object]]
+    latest_market_scan: dict[str, object]
 
 
 @dataclass(slots=True)
@@ -50,6 +51,7 @@ def build_dashboard_summary(
             recent_orders=[],
             recent_errors=[],
             today_targets=[],
+            latest_market_scan={},
         )
 
     connection = sqlite3.connect(db_path)
@@ -98,6 +100,7 @@ def build_dashboard_summary(
             now=now,
             limit=10,
         )
+        latest_market_scan = _fetch_latest_market_scan(connection)
     finally:
         connection.close()
 
@@ -113,6 +116,7 @@ def build_dashboard_summary(
         recent_orders=recent_orders,
         recent_errors=recent_errors,
         today_targets=today_targets,
+        latest_market_scan=latest_market_scan,
     )
 
 
@@ -156,9 +160,19 @@ def format_dashboard_summary(summary: DashboardSummary, db_path: Path) -> str:
             f"unknown_orders={summary.unknown_orders}",
             f"open_orders={summary.open_orders}",
             "",
-            "[today_targets]",
+            "[latest_market_scan]",
         ]
     )
+    lines.extend(
+        _format_rows(
+            [summary.latest_market_scan] if summary.latest_market_scan else [],
+            ("snapshot_time", "universe_count", "scored_count", "qualified_count", "top_candidate_count"),
+        )
+    )
+    lines.extend([
+        "",
+        "[today_targets]",
+    ])
     lines.extend(
         _format_rows(
             summary.today_targets,
@@ -192,6 +206,21 @@ def format_strategy_targets_summary(summary: StrategyTargetsSummary, db_path: Pa
 def _target_date(now: datetime | None) -> datetime.date:
     current = now.astimezone(SEOUL_TZ) if now is not None else datetime.now(SEOUL_TZ)
     return current.date()
+
+
+def _fetch_latest_market_scan(connection: sqlite3.Connection) -> dict[str, object]:
+    row = connection.execute(
+        """
+        SELECT payload_json
+        FROM system_events
+        WHERE event_type = 'market_scan_summary'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return {}
+    return _parse_metadata(row['payload_json'])
 
 
 def _fetch_today_targets(

@@ -30,6 +30,18 @@ class TelegramNotifier:
             payload=normalized,
         )
 
+    def send_target_scores(self, payload: object) -> None:
+        normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
+        items = normalized.get("items")
+        if not isinstance(items, list) or not items:
+            return
+        message = self._format_target_scores_message(normalized)
+        self._send_message(
+            message=message,
+            event_type="target_scores_notification",
+            payload=normalized,
+        )
+
     def send_system_event(self, payload: object) -> None:
         normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
         message = self._format_system_event_message(normalized)
@@ -122,6 +134,23 @@ class TelegramNotifier:
             lines.append(f"현재 보유: {position_qty}주")
         if filled_at:
             lines.append(f"체결 시각: {filled_at}")
+        return "\n".join(lines)
+
+    def _format_target_scores_message(self, payload: dict[str, object]) -> str:
+        snapshot_time = str(payload.get("snapshot_time", ""))
+        items = payload.get("items", [])
+        lines = ["[AUTO_TRADING] 타겟 점수 TOP 10"]
+        if snapshot_time:
+            lines.append(f"기준 시각: {snapshot_time}")
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol", ""))
+            symbol_name = self._resolve_symbol_name(item)
+            display_name = symbol if not symbol_name or symbol_name == symbol else f"{symbol_name} ({symbol})"
+            score_total = item.get("score_total", "")
+            price = self._format_price(item.get("price", ""))
+            lines.append(f"{index}. {display_name} | 점수 {score_total} | 현재가 {price}원")
         return "\n".join(lines)
 
     @staticmethod

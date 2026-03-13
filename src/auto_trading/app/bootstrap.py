@@ -110,6 +110,8 @@ def bootstrap() -> ApplicationContainer:
         recovery_service=recovery_service,
         fail_safe_monitor=fail_safe_monitor,
         trading_calendar=trading_calendar,
+        notifier=notifier,
+        system_events_repository=system_events_repository,
         strategy_snapshots_repository=strategy_snapshots_repository,
         quote_subscription_updater=kis_ws_client.subscribe_quotes,
         universe_master_refresher=lambda: generate_master_csv(output=settings.universe_master_path),
