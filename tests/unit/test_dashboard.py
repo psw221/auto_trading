@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
-from auto_trading.app.dashboard import build_dashboard_summary, format_dashboard_summary
+from auto_trading.app.dashboard import build_dashboard_summary, build_strategy_targets_summary, format_dashboard_summary, format_strategy_targets_summary
 from auto_trading.storage.db import Database
 
 
 class DashboardSummaryTest(unittest.TestCase):
     def test_build_dashboard_summary_reports_key_counts(self) -> None:
         db_path = Path("data/test_dashboard.db")
+        master_path = Path("data/test_dashboard_universe.csv")
         if db_path.exists():
             db_path.unlink()
+        master_path.write_text(
+            "symbol,name,market,asset_type\n005930,Samsung Electronics,KOSPI,STOCK\n",
+            encoding="utf-8",
+        )
         db = Database(db_path)
         db.initialize()
         with db.transaction() as connection:
@@ -69,7 +75,33 @@ class DashboardSummaryTest(unittest.TestCase):
                 """,
                 ("broker_exception", "ERROR", "orders.engine", "network down", "{}", "2026-03-12T09:03:00+09:00"),
             )
-        summary = build_dashboard_summary(db_path)
+            connection.execute(
+                """
+                INSERT INTO strategy_snapshots (
+                    symbol, snapshot_time, score_total, volume_score, momentum_score, ma_score,
+                    atr_score, rsi_score, price, ma5, ma20, rsi, atr, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "005930",
+                    "2026-03-13T00:20:00+00:00",
+                    85,
+                    20,
+                    20,
+                    40,
+                    10,
+                    10,
+                    71000,
+                    70500,
+                    69000,
+                    58,
+                    2.1,
+                    '{"momentum_20": 8.2, "volume_ratio": 1.6}',
+                    "2026-03-13T00:20:00+00:00",
+                ),
+            )
+        now = datetime(2026, 3, 13, 9, 30, tzinfo=timezone.utc)
+        summary = build_dashboard_summary(db_path, master_path, now=now)
         self.assertTrue(summary.db_exists)
         self.assertEqual(1, summary.active_positions)
         self.assertEqual(1, summary.error_positions)
@@ -77,9 +109,16 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertEqual(1, summary.open_orders)
         self.assertEqual(1, len(summary.recent_fills))
         self.assertEqual(1, len(summary.recent_errors))
+        self.assertEqual(1, len(summary.today_targets))
+        self.assertEqual("Samsung Electronics", summary.today_targets[0]["name"])
         rendered = format_dashboard_summary(summary, db_path)
         self.assertIn("active_positions=1", rendered)
-        self.assertIn("[recent_errors]", rendered)
+        self.assertIn("[today_targets]", rendered)
+        self.assertIn("Samsung Electronics", rendered)
+        targets_summary = build_strategy_targets_summary(db_path, master_path, now=now)
+        targets_rendered = format_strategy_targets_summary(targets_summary, db_path)
+        self.assertIn("target_date=2026-03-13", targets_rendered)
+        self.assertIn("score_total=85", targets_rendered)
 
 
 if __name__ == "__main__":

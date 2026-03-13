@@ -7,7 +7,7 @@ from pathlib import Path
 
 MIN_PRICE = 3000.0
 MIN_AVG_TURNOVER = 5_000_000_000.0
-MAX_UNIVERSE_SIZE = 150
+MAX_UNIVERSE_SIZE = 50
 
 
 @dataclass(slots=True)
