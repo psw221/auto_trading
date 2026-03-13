@@ -40,10 +40,19 @@ class _StubRecovery:
 
 
 @dataclass(slots=True)
+class _StubNotifier:
+    events: list[dict[str, str]] = field(default_factory=list)
+
+    def send_system_event(self, payload: dict[str, str]) -> None:
+        self.events.append(payload)
+
+
+@dataclass(slots=True)
 class _StubContainer:
     runtime: _StubRuntime = field(default_factory=_StubRuntime)
     scheduler: _StubScheduler = field(default_factory=_StubScheduler)
     recovery_service: _StubRecovery = field(default_factory=_StubRecovery)
+    notifier: _StubNotifier = field(default_factory=_StubNotifier)
 
 
 class ApplicationRunnerTest(unittest.TestCase):
@@ -55,6 +64,7 @@ class ApplicationRunnerTest(unittest.TestCase):
         self.assertEqual(1, container.runtime.started)
         self.assertEqual(1, container.scheduler.ticked)
         self.assertEqual(1, container.runtime.drained)
+        self.assertEqual("auto_trading started", container.notifier.events[-1]["message"])
 
     def test_run_once_skips_recovery_when_disabled(self) -> None:
         container = _StubContainer()
@@ -75,6 +85,7 @@ class ApplicationRunnerTest(unittest.TestCase):
         runner.start()
         runner.stop()
         self.assertEqual(1, container.runtime.stopped)
+        self.assertEqual("auto_trading stopped", container.notifier.events[-1]["message"])
 
 
 if __name__ == "__main__":

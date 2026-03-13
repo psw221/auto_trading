@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 from urllib import error, request
 
 GITHUB_CONTENTS_API = "https://api.github.com/repos/koreainvestment/open-trading-api/contents/stocks_info"
+KOSPI_MASTER_ZIP_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
 
 SYMBOL_KEYS = ("symbol", "code", "short_code", "단축코드", "종목코드", "표준코드")
 NAME_KEYS = ("name", "name_kr", "한글명", "종목명", "한글종목명")
@@ -29,13 +32,29 @@ def generate_master_csv(
     sources: list[str] | None = None,
     include_official: bool = True,
 ) -> int:
-    resolved_sources: list[str] = []
-    if include_official:
-        resolved_sources.extend(discover_official_sources())
-    resolved_sources.extend(sources or [])
-
+    explicit_sources = list(sources or [])
     rows: dict[str, MasterRow] = {}
-    for source in resolved_sources:
+    official_rows_found = False
+
+    if include_official:
+        official_sources = discover_official_sources()
+        for source in official_sources:
+            for row in load_source_rows(source):
+                if not row.symbol:
+                    continue
+                if not is_supported_row(row):
+                    continue
+                rows[row.symbol] = row
+                official_rows_found = True
+        if not official_rows_found:
+            for row in load_official_master_rows():
+                if not row.symbol:
+                    continue
+                if not is_supported_row(row):
+                    continue
+                rows[row.symbol] = row
+
+    for source in explicit_sources:
         for row in load_source_rows(source):
             if not row.symbol:
                 continue
@@ -64,6 +83,35 @@ def discover_official_sources() -> list[str]:
             continue
         sources.append(download_url)
     return sources
+
+
+def load_official_master_rows() -> list[MasterRow]:
+    rows: dict[str, MasterRow] = {}
+    for row in load_remote_kospi_master_rows():
+        rows[row.symbol] = row
+    return list(rows.values())
+
+
+def load_remote_kospi_master_rows() -> list[MasterRow]:
+    archive_bytes = fetch_bytes(KOSPI_MASTER_ZIP_URL)
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        target_name = next((name for name in archive.namelist() if name.lower().endswith('kospi_code.mst')), '')
+        if not target_name:
+            return []
+        raw_text = archive.read(target_name).decode('cp949', errors='ignore')
+
+    rows: list[MasterRow] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.rstrip('\r\n')
+        if not line:
+            continue
+        left = line[:-228] if len(line) > 228 else line
+        symbol = clean_symbol(left[:9].rstrip())
+        name = left[21:].strip() if len(left) > 21 else ''
+        if not symbol or not name:
+            continue
+        rows.append(MasterRow(symbol=symbol, name=name, market='KOSPI', asset_type='STOCK'))
+    return rows
 
 
 def load_source_rows(source: str) -> list[MasterRow]:
@@ -110,6 +158,12 @@ def fetch_text(url: str) -> str:
             return response.read().decode("utf-8-sig")
     except error.HTTPError as exc:
         raise RuntimeError(f"Failed to download {url}: {exc.code}") from exc
+
+
+def fetch_bytes(url: str) -> bytes:
+    req = request.Request(url, headers={"User-Agent": "auto-trading"})
+    with request.urlopen(req, timeout=20) as response:
+        return response.read()
 
 
 def is_url(value: str) -> bool:

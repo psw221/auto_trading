@@ -35,7 +35,7 @@ if ($NoStartupRecovery) {
     $pythonArgs += "--no-startup-recovery"
 }
 $pythonArgString = [string]::Join(" ", $pythonArgs)
-$command = '$env:PYTHONPATH="src"; python ' + $pythonArgString
+$command = "& { " + '$env:PYTHONPATH=''src''; python ' + $pythonArgString + " }"
 $process = Start-Process `
     -FilePath "pwsh" `
     -ArgumentList @("-NoProfile", "-Command", $command) `
@@ -50,3 +50,4 @@ Write-Output "auto_trading started. pid=$($process.Id)"
 Write-Output "command=python $pythonArgString"
 Write-Output "stdout=$stdoutPath"
 Write-Output "stderr=$stderrPath"
+

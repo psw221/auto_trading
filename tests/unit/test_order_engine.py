@@ -54,6 +54,15 @@ class SuccessBroker:
         return []
 
 
+class CapturingNotifier:
+    def __init__(self) -> None:
+        self.trade_fill_payloads: list[dict[str, object]] = []
+
+    def send_trade_fill(self, payload: dict[str, object]) -> None:
+        self.trade_fill_payloads.append(payload)
+
+
+
 def build_settings() -> Settings:
     return Settings(
         env="demo",
@@ -127,6 +136,7 @@ class OrderEngineExceptionTest(unittest.TestCase):
         positions = PositionsRepository(db)
         system_events = SystemEventsRepository(db)
         broker = SuccessBroker()
+        notifier = CapturingNotifier()
         portfolio = PortfolioService(
             positions,
             orders,
@@ -141,7 +151,7 @@ class OrderEngineExceptionTest(unittest.TestCase):
             positions_repository=positions,
             portfolio_service=portfolio,
             system_events_repository=system_events,
-            notifier=TelegramNotifier(build_settings(), system_events),
+            notifier=notifier,
             fail_safe_monitor=FailSafeMonitor(),
         )
         order = engine.submit_entry(
@@ -181,6 +191,13 @@ class OrderEngineExceptionTest(unittest.TestCase):
         self.assertEqual("FILLED", saved.status)
         self.assertEqual(3, saved.filled_qty)
         self.assertEqual(0, saved.remaining_qty)
+        self.assertEqual(2, len(notifier.trade_fill_payloads))
+        last_payload = notifier.trade_fill_payloads[-1]
+        self.assertEqual("ENTRY", last_payload["reason"])
+        self.assertEqual(3, last_payload["filled_qty"])
+        self.assertEqual(3, last_payload["total_qty"])
+        self.assertEqual(0, last_payload["remaining_qty"])
+        self.assertEqual(3, last_payload["position_qty"])
 
 
 if __name__ == "__main__":

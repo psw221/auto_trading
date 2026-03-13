@@ -17,6 +17,11 @@ class ApplicationRunner:
         if self.perform_startup_recovery:
             self.container.recovery_service.recover()
         self.container.runtime.start()
+        self._notify_system_event(
+            message="auto_trading started",
+            severity="INFO",
+            component="runner",
+        )
         self._started = True
 
     def run_once(self) -> None:
@@ -36,4 +41,21 @@ class ApplicationRunner:
         if not self._started:
             return
         self.container.runtime.stop()
+        self._notify_system_event(
+            message="auto_trading stopped",
+            severity="INFO",
+            component="runner",
+        )
         self._started = False
+
+    def _notify_system_event(self, *, message: str, severity: str, component: str) -> None:
+        notifier = getattr(self.container, "notifier", None)
+        if notifier is None:
+            return
+        notifier.send_system_event(
+            {
+                "message": message,
+                "severity": severity,
+                "component": component,
+            }
+        )

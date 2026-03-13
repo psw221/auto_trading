@@ -210,13 +210,12 @@ class OrderEngine:
             )
             self.portfolio_service.apply_fill(fill)
             self.notifier.send_trade_fill(
-                {
-                    "symbol": fill.symbol,
-                    "side": fill.side,
-                    "fill_qty": fill.fill_qty,
-                    "fill_price": fill.fill_price,
-                    "filled_at": fill.filled_at,
-                }
+                self._build_fill_notification_payload(
+                    fill=fill,
+                    order=order,
+                    filled_qty=next_filled_qty,
+                    remaining_qty=remaining_qty,
+                )
             )
             return None
 
@@ -383,6 +382,31 @@ class OrderEngine:
             return
         position.status = "READY" if order.side == "BUY" and position.qty == 0 else "OPEN"
         self.positions_repository.upsert(position)
+
+    def _build_fill_notification_payload(
+        self,
+        *,
+        fill: BrokerFillSnapshot,
+        order: Order,
+        filled_qty: int,
+        remaining_qty: int,
+    ) -> dict[str, object]:
+        position = self.portfolio_service.get_position_by_id(order.position_id)
+        position_qty = position.qty if position is not None else None
+        symbol_name = position.name if position is not None else ""
+        return {
+            "symbol": fill.symbol,
+            "symbol_name": symbol_name,
+            "side": fill.side,
+            "reason": order.intent,
+            "fill_qty": fill.fill_qty,
+            "fill_price": fill.fill_price,
+            "filled_at": fill.filled_at,
+            "filled_qty": filled_qty,
+            "total_qty": order.qty,
+            "remaining_qty": remaining_qty,
+            "position_qty": position_qty,
+        }
 
     @staticmethod
     def _normalize_event_status(status: str) -> str:

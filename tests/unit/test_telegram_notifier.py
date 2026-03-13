@@ -25,7 +25,12 @@ class _FakeResponse:
         return None
 
 
-def _build_settings(*, token: str = "bot-token", chat_id: str = "123456") -> Settings:
+def _build_settings(
+    *,
+    token: str = "bot-token",
+    chat_id: str = "123456",
+    universe_master_path: Path | None = None,
+) -> Settings:
     return Settings(
         env="demo",
         db_path=Path("data/test_telegram_notifier.db"),
@@ -38,7 +43,7 @@ def _build_settings(*, token: str = "bot-token", chat_id: str = "123456") -> Set
         kis_access_token="token",
         kis_refresh_token="",
         kis_user_id="user1",
-        universe_master_path=Path("data/universe_master.csv"),
+        universe_master_path=universe_master_path or Path("data/universe_master.csv"),
         holiday_calendar_path=Path("data/krx_holidays.csv"),
         holiday_api_service_key="",
         telegram_bot_token=token,
@@ -56,14 +61,23 @@ class TelegramNotifierTest(unittest.TestCase):
         self.system_events = SystemEventsRepository(self.db)
 
     def test_send_trade_fill_posts_to_telegram(self) -> None:
-        notifier = TelegramNotifier(_build_settings(), self.system_events)
+        notifier = TelegramNotifier(
+            _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
+            self.system_events,
+        )
         with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
             notifier.send_trade_fill(
                 {
                     "symbol": "005930",
+                    "symbol_name": "",
                     "side": "BUY",
+                    "reason": "ENTRY",
                     "fill_qty": 1,
                     "fill_price": 70000,
+                    "filled_qty": 1,
+                    "total_qty": 3,
+                    "remaining_qty": 2,
+                    "position_qty": 1,
                     "filled_at": "2026-03-12T09:01:00+09:00",
                 }
             )
@@ -73,7 +87,9 @@ class TelegramNotifierTest(unittest.TestCase):
                 "SELECT event_type, message FROM system_events ORDER BY id DESC LIMIT 1"
             ).fetchone()
         self.assertEqual("trade_fill_notification_sent", row["event_type"])
-        self.assertIn("Trade Fill", row["message"])
+        self.assertIn("Samsung Electronics (005930)", row["message"])
+        self.assertIn("사유: 전략 진입", row["message"])
+        self.assertIn("주문 진행: 1/3주 체결", row["message"])
 
     def test_send_system_event_skips_when_credentials_missing(self) -> None:
         notifier = TelegramNotifier(_build_settings(token="", chat_id=""), self.system_events)
