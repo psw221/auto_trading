@@ -90,6 +90,43 @@ class OrderEngineStub:
 
 
 class FixtureBasedTests(unittest.TestCase):
+    def test_universe_builder_keeps_existing_current_universe_when_rebuild_result_is_empty(self) -> None:
+        current_path = FIXTURES / 'current_universe.csv'
+        original = current_path.read_text(encoding='utf-8') if current_path.exists() else None
+        current_path.write_text(
+            'symbol,name,market,asset_type,price,avg_turnover_20d,kospi200\n'
+            '005930,Samsung Electronics,KOSPI,STOCK,70000,10000000000,Y\n',
+            encoding='utf-8',
+        )
+
+        client = KISClientStub()
+        client.settings = build_settings(FIXTURES / 'universe_master_fixture.csv')
+        client.settings.universe_master_path = FIXTURES / 'universe_master_fixture.csv'
+
+        class _EmptyUniverseKISClient(KISClientStub):
+            def __init__(self) -> None:
+                self.settings = client.settings
+
+            def get_current_price(self, symbol: str):
+                return {
+                    '005930': {'price': 1000.0, 'turnover': 10000000000.0},
+                    '069500': {'price': 35000.0, 'turnover': 7000000000.0},
+                    '000001': {'price': 4000.0, 'turnover': 1000000000.0},
+                    '000002': {'price': 2000.0, 'turnover': 7000000000.0},
+                }[symbol]
+
+        try:
+            builder = UniverseBuilder(_EmptyUniverseKISClient())
+            items = builder.rebuild(__import__('datetime').datetime.now())
+            self.assertEqual([], items)
+            cached = current_path.read_text(encoding='utf-8')
+            self.assertIn('005930,Samsung Electronics', cached)
+        finally:
+            if original is None:
+                current_path.unlink(missing_ok=True)
+            else:
+                current_path.write_text(original, encoding='utf-8')
+
     def test_websocket_client_parses_order_notice_fixture(self) -> None:
         client = KISWebSocketClient(build_settings(), KISClientStub())
         payload = json.loads((FIXTURES / "kis_order_notice.json").read_text(encoding="utf-8"))

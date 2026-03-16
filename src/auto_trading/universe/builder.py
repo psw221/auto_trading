@@ -53,7 +53,8 @@ class UniverseBuilder:
         filtered.sort(key=lambda item: item.avg_turnover_20d, reverse=True)
         selected = filtered[:MAX_UNIVERSE_SIZE]
         self.symbols = [item.symbol for item in selected]
-        self.save_current_universe(selected)
+        if selected:
+            self.save_current_universe(selected)
         return selected
 
     def load_current_universe(self) -> list[UniverseItem]:

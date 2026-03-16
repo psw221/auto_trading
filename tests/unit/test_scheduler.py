@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from auto_trading.app.scheduler import SchedulerService
 from auto_trading.common.trading_calendar import TradingCalendar
@@ -107,7 +108,34 @@ class _StubNotifier:
         self.payloads.append(payload)
 
 
+@dataclass(slots=True)
+class _StubSystemEventsRepository:
+    events: list[dict[str, object]] = field(default_factory=list)
+
+    def create(
+        self,
+        event_type: str,
+        severity: str,
+        component: str,
+        message: str,
+        payload: dict[str, object] | None = None,
+    ) -> int:
+        self.events.append(
+            {
+                'event_type': event_type,
+                'severity': severity,
+                'component': component,
+                'message': message,
+                'payload': payload or {},
+            }
+        )
+        return len(self.events)
+
+
 class SchedulerTargetsTest(unittest.TestCase):
+    def _calendar(self) -> TradingCalendar:
+        return TradingCalendar(Path('data/krx_holidays.csv'))
+
     def _build_scores(self) -> dict[str, StrategyScore]:
         return {
             f'{i:06d}': StrategyScore(symbol=f'{i:06d}', score_total=100 - i, price=1000 + i)
@@ -128,7 +156,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             order_engine=_StubOrderEngine(),
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
-            trading_calendar=TradingCalendar(__import__('pathlib').Path('data/krx_holidays.csv')),
+            trading_calendar=self._calendar(),
             notifier=notifier,
         )
         scheduler.run_market_scan()
@@ -163,7 +191,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             order_engine=_StubOrderEngine(),
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
-            trading_calendar=TradingCalendar(__import__('pathlib').Path('data/krx_holidays.csv')),
+            trading_calendar=self._calendar(),
             notifier=notifier,
             quote_subscription_updater=subscribed.append,
         )
@@ -189,7 +217,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             order_engine=_StubOrderEngine(),
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
-            trading_calendar=TradingCalendar(__import__('pathlib').Path('data/krx_holidays.csv')),
+            trading_calendar=self._calendar(),
             notifier=notifier,
             quote_subscription_updater=subscribed.append,
         )
@@ -199,6 +227,37 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(1, len(subscribed))
         self.assertEqual(12, len(subscribed[0]))
         self.assertEqual(1, len(notifier.payloads))
+
+    def test_run_market_scan_records_universe_restore_failure(self) -> None:
+        class _FailingUniverseBuilder(_StubUniverseBuilder):
+            def load_current_universe(self) -> list[UniverseItem]:
+                self.load_current_count += 1
+                raise RuntimeError('load failed')
+
+        scores = self._build_scores()
+        universe_builder = _FailingUniverseBuilder(symbols=[])
+        system_events_repository = _StubSystemEventsRepository()
+        scheduler = SchedulerService(
+            universe_builder=universe_builder,
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+        )
+        scheduler.run_market_scan()
+        failure_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'market_universe_restore_failed'
+        ]
+        self.assertEqual(1, len(failure_events))
+        self.assertEqual('ERROR', failure_events[0]['severity'])
+        self.assertEqual('load failed', failure_events[0]['payload']['error'])
 
 
 if __name__ == '__main__':

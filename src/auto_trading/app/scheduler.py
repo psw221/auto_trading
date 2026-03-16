@@ -199,7 +199,14 @@ class SchedulerService:
             items = self.universe_builder.load_current_universe()
             if not items:
                 items = self.universe_builder.rebuild(datetime.now())
-        except Exception:
+        except Exception as exc:
+            self._record_system_event(
+                event_type="market_universe_restore_failed",
+                severity="ERROR",
+                component="scheduler",
+                message="Failed to restore market universe.",
+                payload={"error": str(exc)},
+            )
             return
         self._update_quote_subscriptions([item.symbol for item in items])
 
@@ -226,6 +233,28 @@ class SchedulerService:
                     "top_candidate_count": top_candidate_count,
                     "snapshot_time": datetime.now().isoformat(),
                 },
+            )
+        except Exception:
+            return
+
+    def _record_system_event(
+        self,
+        *,
+        event_type: str,
+        severity: str,
+        component: str,
+        message: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        if self.system_events_repository is None:
+            return
+        try:
+            self.system_events_repository.create(
+                event_type=event_type,
+                severity=severity,
+                component=component,
+                message=message,
+                payload=payload,
             )
         except Exception:
             return
