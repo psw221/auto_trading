@@ -115,6 +115,31 @@ class DashboardSummaryTest(unittest.TestCase):
                     "2026-03-13T00:20:00+00:00",
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO trade_logs (
+                    position_id, symbol, strategy_name, entry_order_id, exit_order_id,
+                    entry_price, exit_price, qty, gross_pnl, net_pnl, pnl_pct, entry_at, exit_at, exit_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    1,
+                    "005930",
+                    "swing",
+                    1,
+                    1,
+                    70000,
+                    71500,
+                    2,
+                    3000,
+                    3000,
+                    2.14,
+                    "2026-03-12T09:00:00+09:00",
+                    "2026-03-13T14:50:00+09:00",
+                    "TAKEPROFIT",
+                    "2026-03-13T14:50:00+09:00",
+                ),
+            )
         now = datetime(2026, 3, 13, 9, 30, tzinfo=timezone.utc)
         summary = build_dashboard_summary(db_path, master_path, now=now)
         self.assertTrue(summary.db_exists)
@@ -147,9 +172,23 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertEqual(1, daily_summary.active_positions)
         self.assertEqual(1, daily_summary.today_fill_count)
         self.assertEqual(['005930'], daily_summary.traded_symbols)
+        self.assertEqual(3000.0, daily_summary.realized_pnl)
+        self.assertEqual(2000.0, daily_summary.unrealized_pnl)
+        self.assertEqual(5000.0, daily_summary.total_pnl)
+        self.assertEqual(1, daily_summary.closed_trade_count)
+        self.assertEqual(1, daily_summary.winning_trade_count)
+        self.assertAlmostEqual(1.0, daily_summary.win_rate)
+        self.assertAlmostEqual(2.14, daily_summary.average_closed_pnl_pct)
+        self.assertEqual('005930', daily_summary.best_trade['symbol'])
+        self.assertEqual('005930', daily_summary.worst_trade['symbol'])
         daily_rendered = format_daily_report_summary(daily_summary)
         self.assertIn('[AUTO_TRADING] 일일 리포트', daily_rendered)
-        self.assertIn('보유 종목: 1개', daily_rendered)
+        self.assertIn('실현손익: +3,000원', daily_rendered)
+        self.assertIn('미실현손익: +2,000원', daily_rendered)
+        self.assertIn('총손익: +5,000원', daily_rendered)
+        self.assertIn('승률: 100.0%', daily_rendered)
+        self.assertIn('[청산 내역]', daily_rendered)
+        self.assertIn('사유=익절', daily_rendered)
         self.assertIn('Samsung Electronics(005930)', daily_rendered)
 
 

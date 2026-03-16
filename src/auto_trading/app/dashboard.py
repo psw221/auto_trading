@@ -43,6 +43,16 @@ class DailyReportSummary:
     traded_symbols: list[str]
     tracked_positions: list[dict[str, object]]
     today_trades: list[dict[str, object]]
+    closed_trades: list[dict[str, object]]
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+    closed_trade_count: int
+    winning_trade_count: int
+    win_rate: float | None
+    average_closed_pnl_pct: float | None
+    best_trade: dict[str, object]
+    worst_trade: dict[str, object]
     error_events: list[dict[str, object]]
     order_issue_count: int
     latest_market_scan: dict[str, object]
@@ -177,6 +187,16 @@ def build_daily_report_summary(
             traded_symbols=[],
             tracked_positions=[],
             today_trades=[],
+            closed_trades=[],
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
+            total_pnl=0.0,
+            closed_trade_count=0,
+            winning_trade_count=0,
+            win_rate=None,
+            average_closed_pnl_pct=None,
+            best_trade={},
+            worst_trade={},
             error_events=[],
             order_issue_count=0,
             latest_market_scan={},
@@ -189,6 +209,20 @@ def build_daily_report_summary(
         active_positions = len(tracked_positions)
         today_trades = _fetch_today_fills(connection, universe_master_path=universe_master_path, now=now, limit=50)
         traded_symbols = sorted({str(item.get('symbol', '')) for item in today_trades if item.get('symbol')})
+        closed_trades = _fetch_today_closed_trades(connection, universe_master_path=universe_master_path, now=now, limit=20)
+        realized_pnl = sum(float(item.get('net_pnl') or 0.0) for item in closed_trades)
+        unrealized_pnl = sum(_calculate_position_pnl(position) for position in tracked_positions)
+        total_pnl = realized_pnl + unrealized_pnl
+        closed_trade_count = len(closed_trades)
+        winning_trade_count = sum(1 for item in closed_trades if float(item.get('net_pnl') or 0.0) > 0)
+        win_rate = (winning_trade_count / closed_trade_count) if closed_trade_count else None
+        average_closed_pnl_pct = (
+            sum(float(item.get('pnl_pct') or 0.0) for item in closed_trades) / closed_trade_count
+            if closed_trade_count else None
+        )
+        ranked_closed_trades = sorted(closed_trades, key=lambda item: float(item.get('net_pnl') or 0.0), reverse=True)
+        best_trade = ranked_closed_trades[0] if ranked_closed_trades else {}
+        worst_trade = ranked_closed_trades[-1] if ranked_closed_trades else {}
         error_events = _fetch_today_error_events(connection, now=now, limit=10)
         order_issue_count = _count_today_order_issues(connection, now=now)
         latest_market_scan = _fetch_latest_market_scan(connection)
@@ -203,6 +237,16 @@ def build_daily_report_summary(
         traded_symbols=traded_symbols,
         tracked_positions=tracked_positions,
         today_trades=today_trades,
+        closed_trades=closed_trades,
+        realized_pnl=realized_pnl,
+        unrealized_pnl=unrealized_pnl,
+        total_pnl=total_pnl,
+        closed_trade_count=closed_trade_count,
+        winning_trade_count=winning_trade_count,
+        win_rate=win_rate,
+        average_closed_pnl_pct=average_closed_pnl_pct,
+        best_trade=best_trade,
+        worst_trade=worst_trade,
         error_events=error_events,
         order_issue_count=order_issue_count,
         latest_market_scan=latest_market_scan,
@@ -220,6 +264,14 @@ def format_daily_report_summary(summary: DailyReportSummary) -> str:
         f'거래 종목: {", ".join(summary.traded_symbols) if summary.traded_symbols else "없음"}',
         f'주문 이상: {summary.order_issue_count}건',
         f'에러 이벤트: {len(summary.error_events)}건',
+        '',
+        '[성과]',
+        f'실현손익: {_format_signed_number(summary.realized_pnl)}원',
+        f'미실현손익: {_format_signed_number(summary.unrealized_pnl)}원',
+        f'총손익: {_format_signed_number(summary.total_pnl)}원',
+        f'청산 거래: {summary.closed_trade_count}건',
+        f'승률: {_format_ratio(summary.win_rate)}',
+        f'평균 수익률: {_format_percent(summary.average_closed_pnl_pct)}',
     ]
     if summary.latest_market_scan:
         lines.append(
@@ -240,6 +292,34 @@ def format_daily_report_summary(summary: DailyReportSummary) -> str:
             lines.append(
                 f"- {display} {trade.get('side')} {trade.get('fill_qty')}주 @ {trade.get('fill_price')}원 ({trade.get('filled_at')})"
             )
+
+    lines.extend(['', '[청산 내역]'])
+    if not summary.closed_trades:
+        lines.append('없음')
+    else:
+        for trade in summary.closed_trades:
+            name = trade.get('name') or ''
+            symbol = trade.get('symbol') or ''
+            display = f'{name}({symbol})' if name else symbol
+            lines.append(
+                f"- {display} | 손익={_format_signed_number(trade.get('net_pnl'))}원 | 수익률={_format_percent(trade.get('pnl_pct'))} | 사유={_format_exit_reason(trade.get('exit_reason'))}"
+            )
+
+    lines.extend(['', '[최고/최저]'])
+    if summary.best_trade:
+        best_name = summary.best_trade.get('name') or ''
+        best_symbol = summary.best_trade.get('symbol') or ''
+        best_display = f'{best_name}({best_symbol})' if best_name else best_symbol
+        lines.append(f"최고 수익: {best_display} {_format_signed_number(summary.best_trade.get('net_pnl'))}원")
+    else:
+        lines.append('최고 수익: 없음')
+    if summary.worst_trade:
+        worst_name = summary.worst_trade.get('name') or ''
+        worst_symbol = summary.worst_trade.get('symbol') or ''
+        worst_display = f'{worst_name}({worst_symbol})' if worst_name else worst_symbol
+        lines.append(f"최대 손실: {worst_display} {_format_signed_number(summary.worst_trade.get('net_pnl'))}원")
+    else:
+        lines.append('최대 손실: 없음')
 
     lines.extend(['', '[보유 현황]'])
     if not summary.tracked_positions:
@@ -405,6 +485,49 @@ def _fetch_today_fills(
     return selected[:limit]
 
 
+def _fetch_today_closed_trades(
+    connection: sqlite3.Connection,
+    *,
+    universe_master_path: Path | None,
+    now: datetime | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    rows = _fetch_rows(
+        connection,
+        """
+        SELECT symbol, qty, entry_price, exit_price, gross_pnl, net_pnl, pnl_pct, entry_at, exit_at, exit_reason
+        FROM trade_logs
+        WHERE exit_at IS NOT NULL
+        ORDER BY exit_at DESC, id DESC
+        LIMIT 100
+        """,
+    )
+    name_map = _load_symbol_name_map(universe_master_path)
+    target_date = _target_date(now)
+    selected: list[dict[str, object]] = []
+    for row in rows:
+        exit_at = str(row.get('exit_at', ''))
+        exit_dt = _parse_datetime(exit_at)
+        if exit_dt is None or exit_dt.astimezone(SEOUL_TZ).date() != target_date:
+            continue
+        selected.append(
+            {
+                'symbol': str(row.get('symbol', '')),
+                'name': name_map.get(str(row.get('symbol', '')), ''),
+                'qty': int(row.get('qty') or 0),
+                'entry_price': float(row.get('entry_price') or 0.0),
+                'exit_price': float(row.get('exit_price') or 0.0),
+                'gross_pnl': float(row.get('gross_pnl') or 0.0),
+                'net_pnl': float(row.get('net_pnl') or 0.0),
+                'pnl_pct': float(row.get('pnl_pct') or 0.0),
+                'entry_at': str(row.get('entry_at', '')),
+                'exit_at': exit_at,
+                'exit_reason': str(row.get('exit_reason', '')),
+            }
+        )
+    return selected[:limit]
+
+
 def _fetch_today_error_events(
     connection: sqlite3.Connection,
     *,
@@ -545,6 +668,30 @@ def _format_number(value: object) -> str:
     except (TypeError, ValueError):
         text = str(value).strip()
         return text or '-'
+
+
+def _format_percent(value: object) -> str:
+    try:
+        return f'{float(value):+.2f}%'
+    except (TypeError, ValueError):
+        return '-'
+
+
+def _format_ratio(value: float | None) -> str:
+    if value is None:
+        return '-'
+    return f'{value * 100.0:.1f}%'
+
+
+def _format_exit_reason(value: object) -> str:
+    reason = str(value or '').strip().upper()
+    mapping = {
+        'TAKEPROFIT': '익절',
+        'STOPLOSS': '손절',
+        'TIMEEXIT': '보유 기간 종료',
+        'EXIT': '일반 청산',
+    }
+    return mapping.get(reason, str(value or '').strip() or '-')
 
 
 def _format_signed_number(value: object) -> str:
