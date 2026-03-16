@@ -127,6 +127,45 @@ class FixtureBasedTests(unittest.TestCase):
             else:
                 current_path.write_text(original, encoding='utf-8')
 
+
+    def test_portfolio_sync_compacts_duplicate_local_positions(self) -> None:
+        db_path = Path("data/test_fixture_duplicate_positions.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            KISClientStub(),
+            system_events,
+        )
+        first = Position(symbol="005930", qty=1, status="ERROR")
+        second = Position(symbol="005930", qty=2, status="OPEN")
+        positions.upsert(first)
+        positions.upsert(second)
+
+        portfolio.sync_from_broker()
+
+        rows = positions.find_all_by_symbol("005930")
+        active_rows = [row for row in rows if row.status in {"OPENING", "OPEN", "CLOSING"}]
+        self.assertEqual(1, len(active_rows))
+        self.assertEqual(2, active_rows[0].qty)
+        compacted = [row for row in rows if row.id != active_rows[0].id][0]
+        self.assertEqual("CLOSED", compacted.status)
+        self.assertEqual(0, compacted.qty)
+        self.assertEqual("duplicate_local_position", compacted.exit_reason)
+        with db.transaction() as connection:
+            event = connection.execute(
+                "SELECT event_type, payload_json FROM system_events WHERE event_type = 'duplicate_local_position' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNotNone(event)
+
     def test_websocket_client_parses_order_notice_fixture(self) -> None:
         client = KISWebSocketClient(build_settings(), KISClientStub())
         payload = json.loads((FIXTURES / "kis_order_notice.json").read_text(encoding="utf-8"))

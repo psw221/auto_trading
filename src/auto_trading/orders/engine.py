@@ -35,7 +35,7 @@ class OrderEngine:
             )
             raise RuntimeError("Fail-safe is blocking new orders.")
 
-        existing_position = self.positions_repository.find_by_symbol(signal.symbol)
+        existing_position = self.positions_repository.find_active_by_symbol(signal.symbol)
         if existing_position and existing_position.status in {"OPENING", "OPEN", "CLOSING"}:
             self.system_events_repository.create(
                 event_type="duplicate_position",

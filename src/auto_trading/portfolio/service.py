@@ -19,6 +19,7 @@ class PortfolioService:
     def sync_from_broker(self) -> None:
         broker_positions = {item.symbol: item for item in self.kis_client.get_positions()}
         local_positions = self.positions_repository.find_all()
+        local_positions = self._compact_duplicate_local_positions(local_positions)
 
         for local_position in local_positions:
             broker_position = broker_positions.get(local_position.symbol)
@@ -148,7 +149,49 @@ class PortfolioService:
         local_position.current_price = broker_position.current_price
         if broker_position.qty > 0:
             local_position.status = "OPEN"
+            local_position.closed_at = None
+            local_position.exit_reason = None
         self.positions_repository.upsert(local_position)
+
+    def _compact_duplicate_local_positions(self, local_positions: list[Position]) -> list[Position]:
+        grouped: dict[str, list[Position]] = {}
+        for position in local_positions:
+            grouped.setdefault(position.symbol, []).append(position)
+
+        compacted: list[Position] = []
+        for symbol, positions in grouped.items():
+            active_positions = [
+                position for position in positions
+                if position.status in {"OPENING", "OPEN", "CLOSING", "ERROR"} or position.qty > 0
+            ]
+            if len(active_positions) <= 1:
+                compacted.extend(positions)
+                continue
+
+            active_positions.sort(key=lambda item: (item.updated_at or "", item.id or 0), reverse=True)
+            keeper = active_positions[0]
+            compacted.append(keeper)
+            active_ids = {item.id for item in active_positions}
+            for duplicate in active_positions[1:]:
+                duplicate.qty = 0
+                duplicate.status = "CLOSED"
+                duplicate.closed_at = utc_now().isoformat()
+                duplicate.exit_reason = "duplicate_local_position"
+                self.positions_repository.upsert(duplicate)
+                self._log_sync_event(
+                    event_type="duplicate_local_position",
+                    severity="WARN",
+                    message="Compacted duplicate local positions for symbol during sync.",
+                    payload={
+                        "symbol": symbol,
+                        "position_id": duplicate.id,
+                        "kept_position_id": keeper.id,
+                    },
+                )
+            compacted.extend([position for position in positions if position.id not in active_ids])
+
+        compacted.sort(key=lambda item: (item.updated_at or "", item.id or 0), reverse=True)
+        return compacted
 
     def _log_sync_event(
         self,

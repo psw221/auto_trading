@@ -129,6 +129,36 @@ class PositionsRepository:
             ).fetchall()
         return [self._to_model(row) for row in rows]
 
+    def find_active_by_symbol(self, symbol: str) -> Position | None:
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM positions
+                WHERE symbol = ?
+                  AND status IN ('OPENING', 'OPEN', 'CLOSING')
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (symbol,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_model(row)
+
+    def find_all_by_symbol(self, symbol: str) -> list[Position]:
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM positions
+                WHERE symbol = ?
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (symbol,),
+            ).fetchall()
+        return [self._to_model(row) for row in rows]
+
     def find_by_symbol(self, symbol: str) -> Position | None:
         with self.db.transaction() as connection:
             row = connection.execute(

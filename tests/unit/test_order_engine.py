@@ -199,6 +199,20 @@ class OrderEngineExceptionTest(unittest.TestCase):
         self.assertEqual(0, last_payload["remaining_qty"])
         self.assertEqual(3, last_payload["position_qty"])
 
+    def test_submit_entry_blocks_when_active_position_exists(self) -> None:
+        self.positions.upsert(__import__('auto_trading.portfolio.models', fromlist=['Position']).Position(symbol='005930', qty=1, status='OPEN'))
+        with self.assertRaises(RuntimeError):
+            self.engine.submit_entry(
+                EntrySignal(symbol="005930", score_total=80, price=70000.0),
+                OrderSizing(qty=1, order_type="LIMIT", price=70000.0),
+            )
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT event_type, message FROM system_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual("duplicate_position", row["event_type"])
+        self.assertIn("active position already exists", row["message"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
