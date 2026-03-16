@@ -259,6 +259,44 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual('ERROR', failure_events[0]['severity'])
         self.assertEqual('load failed', failure_events[0]['payload']['error'])
 
+    def test_run_pre_market_restores_cached_universe_when_rebuild_is_empty(self) -> None:
+        current_items = [UniverseItem(symbol=f'{i:06d}', name=f'Name {i:06d}') for i in range(3)]
+
+        class _EmptyRebuildUniverseBuilder(_StubUniverseBuilder):
+            def rebuild(self, as_of):
+                self.rebuild_count += 1
+                self.symbols = []
+                return []
+
+        subscribed: list[list[str]] = []
+        system_events_repository = _StubSystemEventsRepository()
+        universe_builder = _EmptyRebuildUniverseBuilder(symbols=[], current_items=current_items)
+        scheduler = SchedulerService(
+            universe_builder=universe_builder,
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            quote_subscription_updater=subscribed.append,
+        )
+        scheduler.run_pre_market()
+        self.assertEqual(1, universe_builder.rebuild_count)
+        self.assertEqual(1, universe_builder.load_current_count)
+        self.assertEqual([item.symbol for item in current_items], universe_builder.symbols)
+        self.assertEqual(1, len(subscribed))
+        self.assertEqual([item.symbol for item in current_items], subscribed[0])
+        warning_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'market_universe_rebuild_empty'
+        ]
+        self.assertEqual(1, len(warning_events))
+
 
 if __name__ == '__main__':
     unittest.main()

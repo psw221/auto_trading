@@ -22,6 +22,7 @@ class DashboardSummary:
     recent_fills: list[dict[str, object]]
     recent_orders: list[dict[str, object]]
     recent_errors: list[dict[str, object]]
+    tracked_positions: list[dict[str, object]]
     today_targets: list[dict[str, object]]
     latest_market_scan: dict[str, object]
 
@@ -50,6 +51,7 @@ def build_dashboard_summary(
             recent_fills=[],
             recent_orders=[],
             recent_errors=[],
+            tracked_positions=[],
             today_targets=[],
             latest_market_scan={},
         )
@@ -94,6 +96,16 @@ def build_dashboard_summary(
             LIMIT 10
             """,
         )
+        tracked_positions = _fetch_rows(
+            connection,
+            """
+            SELECT symbol, name, status, qty, avg_entry_price, current_price, opened_at, updated_at
+            FROM positions
+            WHERE status IN ('OPENING', 'OPEN', 'CLOSING')
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 10
+            """,
+        )
         today_targets = _fetch_today_targets(
             connection,
             universe_master_path=universe_master_path,
@@ -115,6 +127,7 @@ def build_dashboard_summary(
         recent_fills=recent_fills,
         recent_orders=recent_orders,
         recent_errors=recent_errors,
+        tracked_positions=tracked_positions,
         today_targets=today_targets,
         latest_market_scan=latest_market_scan,
     )
@@ -167,6 +180,16 @@ def format_dashboard_summary(summary: DashboardSummary, db_path: Path) -> str:
         _format_rows(
             [summary.latest_market_scan] if summary.latest_market_scan else [],
             ("snapshot_time", "universe_count", "scored_count", "qualified_count", "top_candidate_count"),
+        )
+    )
+    lines.extend([
+        "",
+        "[tracked_positions]",
+    ])
+    lines.extend(
+        _format_rows(
+            summary.tracked_positions,
+            ("symbol", "name", "status", "qty", "avg_entry_price", "current_price", "updated_at"),
         )
     )
     lines.extend([

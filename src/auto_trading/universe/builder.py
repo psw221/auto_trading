@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -84,11 +85,13 @@ class UniverseBuilder:
 
     def save_current_universe(self, items: list[UniverseItem]) -> None:
         path = self._resolve_current_universe_path()
+        temp_path = path.with_suffix(f"{path.suffix}.tmp")
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8", newline="") as handle:
+        with temp_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(
                 handle,
                 fieldnames=["symbol", "name", "market", "asset_type", "price", "avg_turnover_20d", "kospi200"],
+                lineterminator="\n",
             )
             writer.writeheader()
             for item in items:
@@ -103,6 +106,9 @@ class UniverseBuilder:
                         "kospi200": "Y" if item.kospi200 else "N",
                     }
                 )
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
 
     def _load_master_items(self) -> list[UniverseItem]:
         path = self._resolve_master_path()

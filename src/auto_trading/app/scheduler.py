@@ -63,7 +63,7 @@ class SchedulerService:
             return
         self._refresh_universe_master()
         self.recovery_service.recover()
-        items = self.universe_builder.rebuild(datetime.now())
+        items = self._rebuild_or_restore_market_universe()
         self._update_quote_subscriptions([item.symbol for item in items])
 
     def run_market_scan(self) -> None:
@@ -192,13 +192,51 @@ class SchedulerService:
         except Exception:
             return
 
+    def _rebuild_or_restore_market_universe(self) -> list[object]:
+        try:
+            items = self.universe_builder.rebuild(datetime.now())
+        except Exception as exc:
+            self._record_system_event(
+                event_type="market_universe_rebuild_failed",
+                severity="ERROR",
+                component="scheduler",
+                message="Failed to rebuild market universe.",
+                payload={"error": str(exc)},
+            )
+            return self._load_cached_market_universe(log_if_empty=True)
+
+        if items:
+            return items
+
+        self._record_system_event(
+            event_type="market_universe_rebuild_empty",
+            severity="WARN",
+            component="scheduler",
+            message="Market universe rebuild returned no symbols. Falling back to cached universe.",
+            payload={},
+        )
+        return self._load_cached_market_universe(log_if_empty=True)
+
+    def _load_cached_market_universe(self, *, log_if_empty: bool = False) -> list[object]:
+        items = self.universe_builder.load_current_universe()
+        if items or not log_if_empty:
+            return items
+        self._record_system_event(
+            event_type="market_universe_cache_empty",
+            severity="WARN",
+            component="scheduler",
+            message="Cached market universe is empty.",
+            payload={},
+        )
+        return items
+
     def _ensure_market_universe_ready(self) -> None:
         if self.universe_builder.symbols:
             return
         try:
-            items = self.universe_builder.load_current_universe()
+            items = self._load_cached_market_universe()
             if not items:
-                items = self.universe_builder.rebuild(datetime.now())
+                items = self._rebuild_or_restore_market_universe()
         except Exception as exc:
             self._record_system_event(
                 event_type="market_universe_restore_failed",
