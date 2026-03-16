@@ -51,6 +51,15 @@ class TelegramNotifier:
             payload=normalized,
         )
 
+    def send_daily_report(self, payload: object) -> None:
+        normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
+        message = self._format_daily_report_message(normalized)
+        self._send_message(
+            message=message,
+            event_type="daily_report_notification",
+            payload=normalized,
+        )
+
     def _send_message(self, *, message: str, event_type: str, payload: dict[str, object]) -> None:
         if not self.settings.telegram_bot_token or not self.settings.telegram_chat_id:
             self.system_events_repository.create(
@@ -152,6 +161,10 @@ class TelegramNotifier:
             price = self._format_price(item.get("price", ""))
             lines.append(f"{index}. {display_name} | 점수 {score_total} | 현재가 {price}원")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_daily_report_message(payload: dict[str, object]) -> str:
+        return str(payload.get("message", "")).strip() or "[AUTO_TRADING] 일일 리포트"
 
     @staticmethod
     def _format_system_event_message(payload: dict[str, object]) -> str:

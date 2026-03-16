@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from auto_trading.app.dashboard import build_daily_report_summary, format_daily_report_summary
 from auto_trading.app.scheduler import SchedulerService
 from auto_trading.app.runtime import RuntimeService
 from auto_trading.broker.kis_client import KISClient
@@ -116,6 +117,14 @@ def bootstrap() -> ApplicationContainer:
         quote_subscription_updater=kis_ws_client.subscribe_quotes,
         universe_master_refresher=lambda: generate_master_csv(output=settings.universe_master_path),
         holiday_calendar_refresher=lambda: _refresh_holiday_calendar(settings),
+        daily_report_builder=lambda: {
+            'message': format_daily_report_summary(
+                build_daily_report_summary(
+                    settings.db_path,
+                    settings.universe_master_path,
+                )
+            )
+        },
     )
     runtime = RuntimeService(
         kis_ws_client=kis_ws_client,

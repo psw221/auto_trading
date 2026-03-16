@@ -34,6 +34,20 @@ class StrategyTargetsSummary:
     today_targets: list[dict[str, object]]
 
 
+@dataclass(slots=True)
+class DailyReportSummary:
+    db_exists: bool
+    report_date: str
+    active_positions: int
+    today_fill_count: int
+    traded_symbols: list[str]
+    tracked_positions: list[dict[str, object]]
+    today_trades: list[dict[str, object]]
+    error_events: list[dict[str, object]]
+    order_issue_count: int
+    latest_market_scan: dict[str, object]
+
+
 def build_dashboard_summary(
     db_path: Path,
     universe_master_path: Path | None = None,
@@ -96,16 +110,7 @@ def build_dashboard_summary(
             LIMIT 10
             """,
         )
-        tracked_positions = _fetch_rows(
-            connection,
-            """
-            SELECT symbol, name, status, qty, avg_entry_price, current_price, opened_at, updated_at
-            FROM positions
-            WHERE status IN ('OPENING', 'OPEN', 'CLOSING')
-            ORDER BY updated_at DESC, id DESC
-            LIMIT 10
-            """,
-        )
+        tracked_positions = _fetch_tracked_positions(connection)
         today_targets = _fetch_today_targets(
             connection,
             universe_master_path=universe_master_path,
@@ -155,6 +160,110 @@ def build_strategy_targets_summary(
     finally:
         connection.close()
     return StrategyTargetsSummary(db_exists=True, target_date=target_date, today_targets=today_targets)
+
+
+def build_daily_report_summary(
+    db_path: Path,
+    universe_master_path: Path | None = None,
+    now: datetime | None = None,
+) -> DailyReportSummary:
+    report_date = _target_date(now).isoformat()
+    if not db_path.exists():
+        return DailyReportSummary(
+            db_exists=False,
+            report_date=report_date,
+            active_positions=0,
+            today_fill_count=0,
+            traded_symbols=[],
+            tracked_positions=[],
+            today_trades=[],
+            error_events=[],
+            order_issue_count=0,
+            latest_market_scan={},
+        )
+
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        tracked_positions = _fetch_tracked_positions(connection)
+        active_positions = len(tracked_positions)
+        today_trades = _fetch_today_fills(connection, universe_master_path=universe_master_path, now=now, limit=50)
+        traded_symbols = sorted({str(item.get('symbol', '')) for item in today_trades if item.get('symbol')})
+        error_events = _fetch_today_error_events(connection, now=now, limit=10)
+        order_issue_count = _count_today_order_issues(connection, now=now)
+        latest_market_scan = _fetch_latest_market_scan(connection)
+    finally:
+        connection.close()
+
+    return DailyReportSummary(
+        db_exists=True,
+        report_date=report_date,
+        active_positions=active_positions,
+        today_fill_count=len(today_trades),
+        traded_symbols=traded_symbols,
+        tracked_positions=tracked_positions,
+        today_trades=today_trades,
+        error_events=error_events,
+        order_issue_count=order_issue_count,
+        latest_market_scan=latest_market_scan,
+    )
+
+
+def format_daily_report_summary(summary: DailyReportSummary) -> str:
+    lines = [
+        '[AUTO_TRADING] 일일 리포트',
+        f'기준일: {summary.report_date}',
+        '',
+        '[요약]',
+        f'보유 종목: {summary.active_positions}개',
+        f'당일 체결: {summary.today_fill_count}건',
+        f'거래 종목: {", ".join(summary.traded_symbols) if summary.traded_symbols else "없음"}',
+        f'주문 이상: {summary.order_issue_count}건',
+        f'에러 이벤트: {len(summary.error_events)}건',
+    ]
+    if summary.latest_market_scan:
+        lines.append(
+            '최신 스캔: ' +
+            f"universe={summary.latest_market_scan.get('universe_count', 0)} / " +
+            f"scored={summary.latest_market_scan.get('scored_count', 0)} / " +
+            f"qualified={summary.latest_market_scan.get('qualified_count', 0)}"
+        )
+
+    lines.extend(['', '[오늘 거래]'])
+    if not summary.today_trades:
+        lines.append('없음')
+    else:
+        for trade in summary.today_trades:
+            name = trade.get('name') or ''
+            symbol = trade.get('symbol') or ''
+            display = f'{name}({symbol})' if name else symbol
+            lines.append(
+                f"- {display} {trade.get('side')} {trade.get('fill_qty')}주 @ {trade.get('fill_price')}원 ({trade.get('filled_at')})"
+            )
+
+    lines.extend(['', '[보유 현황]'])
+    if not summary.tracked_positions:
+        lines.append('없음')
+    else:
+        for position in summary.tracked_positions:
+            pnl = _calculate_position_pnl(position)
+            pnl_pct = _calculate_position_pnl_pct(position)
+            name = position.get('name') or ''
+            symbol = position.get('symbol') or ''
+            display = f'{name}({symbol})' if name else symbol
+            lines.append(
+                f"- {display} | 상태={position.get('status')} | 보유={position.get('qty')}주 | 평균단가={_format_number(position.get('avg_entry_price'))}원 | 현재가={_format_number(position.get('current_price'))}원 | 평가손익={_format_signed_number(pnl)}원 | 수익률={pnl_pct}"
+            )
+
+    lines.extend(['', '[이상/주의]'])
+    if not summary.error_events:
+        lines.append('없음')
+    else:
+        for event in summary.error_events:
+            lines.append(
+                f"- {event.get('component')} / {event.get('event_type')} / {event.get('message')}"
+            )
+    return "\n".join(lines)
 
 
 def format_dashboard_summary(summary: DashboardSummary, db_path: Path) -> str:
@@ -231,6 +340,19 @@ def _target_date(now: datetime | None) -> datetime.date:
     return current.date()
 
 
+def _fetch_tracked_positions(connection: sqlite3.Connection) -> list[dict[str, object]]:
+    return _fetch_rows(
+        connection,
+        """
+        SELECT symbol, name, status, qty, avg_entry_price, current_price, opened_at, updated_at
+        FROM positions
+        WHERE status IN ('OPENING', 'OPEN', 'CLOSING')
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 10
+        """,
+    )
+
+
 def _fetch_latest_market_scan(connection: sqlite3.Connection) -> dict[str, object]:
     row = connection.execute(
         """
@@ -244,6 +366,92 @@ def _fetch_latest_market_scan(connection: sqlite3.Connection) -> dict[str, objec
     if row is None:
         return {}
     return _parse_metadata(row['payload_json'])
+
+
+def _fetch_today_fills(
+    connection: sqlite3.Connection,
+    *,
+    universe_master_path: Path | None,
+    now: datetime | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    rows = _fetch_rows(
+        connection,
+        """
+        SELECT symbol, side, fill_qty, fill_price, filled_at
+        FROM fills
+        ORDER BY filled_at DESC, id DESC
+        LIMIT 200
+        """,
+    )
+    name_map = _load_symbol_name_map(universe_master_path)
+    target_date = _target_date(now)
+    selected: list[dict[str, object]] = []
+    for row in rows:
+        filled_at = str(row.get('filled_at', ''))
+        filled_dt = _parse_datetime(filled_at)
+        if filled_dt is None or filled_dt.astimezone(SEOUL_TZ).date() != target_date:
+            continue
+        selected.append(
+            {
+                'symbol': str(row.get('symbol', '')),
+                'name': name_map.get(str(row.get('symbol', '')), ''),
+                'side': str(row.get('side', '')),
+                'fill_qty': int(row.get('fill_qty') or 0),
+                'fill_price': _format_number(row.get('fill_price')),
+                'filled_at': filled_at,
+            }
+        )
+    return selected[:limit]
+
+
+def _fetch_today_error_events(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    rows = _fetch_rows(
+        connection,
+        """
+        SELECT severity, component, event_type, message, occurred_at
+        FROM system_events
+        WHERE severity IN ('ERROR', 'CRITICAL')
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 50
+        """,
+    )
+    target_date = _target_date(now)
+    selected: list[dict[str, object]] = []
+    for row in rows:
+        occurred_at = str(row.get('occurred_at', ''))
+        occurred_dt = _parse_datetime(occurred_at)
+        if occurred_dt is None or occurred_dt.astimezone(SEOUL_TZ).date() != target_date:
+            continue
+        selected.append(row)
+    return selected[:limit]
+
+
+def _count_today_order_issues(connection: sqlite3.Connection, *, now: datetime | None) -> int:
+    rows = _fetch_rows(
+        connection,
+        """
+        SELECT event_type, occurred_at
+        FROM system_events
+        WHERE event_type IN ('order_unknown', 'order_rejected', 'unknown_order_unresolved', 'broker_exception', 'reconcile_failed')
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 100
+        """,
+    )
+    target_date = _target_date(now)
+    count = 0
+    for row in rows:
+        occurred_at = str(row.get('occurred_at', ''))
+        occurred_dt = _parse_datetime(occurred_at)
+        if occurred_dt is None or occurred_dt.astimezone(SEOUL_TZ).date() != target_date:
+            continue
+        count += 1
+    return count
 
 
 def _fetch_today_targets(
@@ -307,6 +515,44 @@ def _load_symbol_name_map(universe_master_path: Path | None) -> dict[str, str]:
     except OSError:
         return {}
     return result
+
+
+def _calculate_position_pnl(position: dict[str, object]) -> float:
+    try:
+        qty = float(position.get('qty') or 0)
+        avg_entry_price = float(position.get('avg_entry_price') or 0)
+        current_price = float(position.get('current_price') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return (current_price - avg_entry_price) * qty
+
+
+def _calculate_position_pnl_pct(position: dict[str, object]) -> str:
+    try:
+        avg_entry_price = float(position.get('avg_entry_price') or 0)
+        current_price = float(position.get('current_price') or 0)
+        if avg_entry_price <= 0:
+            return '-'
+        pnl_pct = ((current_price / avg_entry_price) - 1.0) * 100.0
+        return f'{pnl_pct:+.2f}%'
+    except (TypeError, ValueError):
+        return '-'
+
+
+def _format_number(value: object) -> str:
+    try:
+        return f'{float(value):,.0f}'
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        return text or '-'
+
+
+def _format_signed_number(value: object) -> str:
+    try:
+        number = float(value)
+        return f'{number:+,.0f}'
+    except (TypeError, ValueError):
+        return str(value).strip() or '-'
 
 
 def _parse_metadata(value: object) -> dict[str, object]:

@@ -116,6 +116,22 @@ class TelegramNotifierTest(unittest.TestCase):
         self.assertIn("Samsung Electronics (005930)", row["message"])
         self.assertIn("점수 92", row["message"])
 
+
+    def test_send_daily_report_posts_to_telegram(self) -> None:
+        notifier = TelegramNotifier(
+            _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
+            self.system_events,
+        )
+        with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
+            notifier.send_daily_report({"message": "[AUTO_TRADING] 일일 리포트\n기준일: 2026-03-16\n\n[요약]\n보유 종목: 1개"})
+        mocked.assert_called_once()
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT event_type, message FROM system_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual("daily_report_notification_sent", row["event_type"])
+        self.assertIn("일일 리포트", row["message"])
+
     def test_send_system_event_skips_when_credentials_missing(self) -> None:
         notifier = TelegramNotifier(_build_settings(token="", chat_id=""), self.system_events)
         notifier.send_system_event({"message": "stream disconnected", "severity": "ERROR", "component": "runtime"})

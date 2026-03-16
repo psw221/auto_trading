@@ -34,6 +34,7 @@ class SchedulerService:
     quote_subscription_updater: object | None = None
     universe_master_refresher: object | None = None
     holiday_calendar_refresher: object | None = None
+    daily_report_builder: object | None = None
     market_scan_interval_seconds: float = 30.0
     loop_sleep_seconds: float = 1.0
     _last_pre_market_run_date: str | None = field(init=False, default=None)
@@ -136,6 +137,7 @@ class SchedulerService:
         if not self.trading_calendar.is_trading_day(datetime.now()):
             return
         self.recovery_service.recover()
+        self._send_daily_report()
 
     def _run_pre_market_once(self, now: datetime) -> None:
         current_day = now.strftime("%Y-%m-%d")
@@ -247,6 +249,33 @@ class SchedulerService:
             )
             return
         self._update_quote_subscriptions([item.symbol for item in items])
+
+    def _send_daily_report(self) -> None:
+        if self.notifier is None or self.daily_report_builder is None:
+            return
+        try:
+            payload = self.daily_report_builder()
+        except Exception as exc:
+            self._record_system_event(
+                event_type="daily_report_build_failed",
+                severity="ERROR",
+                component="scheduler",
+                message="Failed to build daily report.",
+                payload={"error": str(exc)},
+            )
+            return
+        if not isinstance(payload, dict) or not payload.get('message'):
+            return
+        try:
+            self.notifier.send_daily_report(payload)
+        except Exception as exc:
+            self._record_system_event(
+                event_type="daily_report_send_failed",
+                severity="ERROR",
+                component="scheduler",
+                message="Failed to send daily report.",
+                payload={"error": str(exc)},
+            )
 
     def _record_market_scan_summary(
         self,

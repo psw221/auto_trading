@@ -103,9 +103,13 @@ class _StubFailSafeMonitor:
 @dataclass(slots=True)
 class _StubNotifier:
     payloads: list[dict[str, object]] = field(default_factory=list)
+    daily_reports: list[dict[str, object]] = field(default_factory=list)
 
     def send_target_scores(self, payload: dict[str, object]) -> None:
         self.payloads.append(payload)
+
+    def send_daily_report(self, payload: dict[str, object]) -> None:
+        self.daily_reports.append(payload)
 
 
 @dataclass(slots=True)
@@ -296,6 +300,26 @@ class SchedulerTargetsTest(unittest.TestCase):
             if event['event_type'] == 'market_universe_rebuild_empty'
         ]
         self.assertEqual(1, len(warning_events))
+
+    def test_tick_sends_daily_report_once_in_post_market(self) -> None:
+        notifier = _StubNotifier()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=[]),
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+            daily_report_builder=lambda: {'message': '[AUTO_TRADING] 일일 리포트'},
+        )
+        scheduler.tick(__import__('datetime').datetime(2026, 3, 16, 15, 30))
+        scheduler.tick(__import__('datetime').datetime(2026, 3, 16, 15, 31))
+        self.assertEqual(1, len(notifier.daily_reports))
 
 
 if __name__ == '__main__':

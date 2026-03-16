@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from auto_trading.app.dashboard import build_dashboard_summary, build_strategy_targets_summary, format_dashboard_summary, format_strategy_targets_summary
+from auto_trading.app.dashboard import build_daily_report_summary, build_dashboard_summary, build_strategy_targets_summary, format_daily_report_summary, format_dashboard_summary, format_strategy_targets_summary
 from auto_trading.storage.db import Database
 
 
@@ -65,7 +65,7 @@ class DashboardSummaryTest(unittest.TestCase):
                     order_id, broker_fill_id, symbol, side, fill_price, fill_qty, fill_amount, filled_at, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (1, "B1", "005930", "BUY", 70000, 1, 70000, "2026-03-12T09:02:00+09:00", "2026-03-12T09:02:00+09:00"),
+                (1, "B1", "005930", "BUY", 70000, 1, 70000, "2026-03-13T09:02:00+09:00", "2026-03-13T09:02:00+09:00"),
             )
             connection.execute(
                 """
@@ -142,6 +142,15 @@ class DashboardSummaryTest(unittest.TestCase):
         targets_rendered = format_strategy_targets_summary(targets_summary, db_path)
         self.assertIn("target_date=2026-03-13", targets_rendered)
         self.assertIn("score_total=85", targets_rendered)
+        daily_summary = build_daily_report_summary(db_path, master_path, now=now)
+        self.assertTrue(daily_summary.db_exists)
+        self.assertEqual(1, daily_summary.active_positions)
+        self.assertEqual(1, daily_summary.today_fill_count)
+        self.assertEqual(['005930'], daily_summary.traded_symbols)
+        daily_rendered = format_daily_report_summary(daily_summary)
+        self.assertIn('[AUTO_TRADING] 일일 리포트', daily_rendered)
+        self.assertIn('보유 종목: 1개', daily_rendered)
+        self.assertIn('Samsung Electronics(005930)', daily_rendered)
 
 
 if __name__ == "__main__":
