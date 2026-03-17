@@ -18,7 +18,12 @@ class SignalEngine:
         if position.avg_entry_price > 0 and snapshot.price <= position.avg_entry_price * 0.985:
             return ExitSignal(symbol=position.symbol, reason="stop_loss", order_type="MARKET")
         if position.avg_entry_price > 0 and snapshot.price >= position.avg_entry_price * 1.04:
-            return ExitSignal(symbol=position.symbol, reason="take_profit", order_type="LIMIT")
+            return ExitSignal(
+                symbol=position.symbol,
+                reason="take_profit",
+                order_type="LIMIT",
+                price=snapshot.price,
+            )
         if snapshot.ma5 > 0 and snapshot.price < snapshot.ma5:
             return ExitSignal(symbol=position.symbol, reason="ma5_breakdown", order_type="MARKET")
         if self._holding_days(position) > 5:

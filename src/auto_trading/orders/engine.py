@@ -97,6 +97,7 @@ class OrderEngine:
             order_type=signal.order_type,
             intent=signal.reason.upper(),
             position_id=position.id,
+            price=getattr(signal, "price", None),
         )
         self.orders_repository.create(order)
         try:
@@ -106,7 +107,7 @@ class OrderEngine:
                     side="SELL",
                     qty=position.qty,
                     order_type=signal.order_type,
-                    price=None,
+                    price=getattr(signal, "price", None),
                 )
             )
         except (BrokerApiError, BrokerResponseError) as exc:

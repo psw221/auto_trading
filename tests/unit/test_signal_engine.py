@@ -27,6 +27,7 @@ class SignalEngineExitTest(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual("take_profit", signal.reason)
         self.assertEqual("LIMIT", signal.order_type)
+        self.assertEqual(104.5, signal.price)
 
     def test_ma5_breakdown_triggers_market_exit(self) -> None:
         position = Position(symbol="005930", qty=1, avg_entry_price=100.0, opened_at=datetime.now(timezone.utc).isoformat())

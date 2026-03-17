@@ -58,6 +58,7 @@ class ExitSignal:
     symbol: str
     reason: str
     order_type: str
+    price: float | None = None
 
 
 @dataclass(slots=True)

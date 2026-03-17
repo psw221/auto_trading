@@ -16,7 +16,7 @@ from auto_trading.storage.repositories.orders import OrdersRepository
 from auto_trading.storage.repositories.positions import PositionsRepository
 from auto_trading.storage.repositories.system_events import SystemEventsRepository
 from auto_trading.storage.repositories.trade_logs import TradeLogsRepository
-from auto_trading.strategy.models import EntrySignal, OrderSizing
+from auto_trading.strategy.models import EntrySignal, ExitSignal, OrderSizing
 
 
 class FailingBroker:
@@ -30,8 +30,10 @@ class FailingBroker:
 class SuccessBroker:
     def __init__(self) -> None:
         self.order_no = "ORDER-0001"
+        self.last_request = None
 
     def place_cash_order(self, request):
+        self.last_request = request
         return BrokerOrderResponse(
             order_no=self.order_no,
             accepted=True,
@@ -212,6 +214,55 @@ class OrderEngineExceptionTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual("duplicate_position", row["event_type"])
         self.assertIn("active position already exists", row["message"].lower())
+
+    def test_submit_exit_passes_limit_price_from_signal(self) -> None:
+        db_path = Path("data/test_engine_exit_runtime.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+        broker = SuccessBroker()
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            broker,
+            system_events,
+        )
+        engine = OrderEngine(
+            kis_client=broker,
+            orders_repository=orders,
+            positions_repository=positions,
+            portfolio_service=portfolio,
+            system_events_repository=system_events,
+            notifier=CapturingNotifier(),
+            fail_safe_monitor=FailSafeMonitor(),
+        )
+        position = __import__('auto_trading.portfolio.models', fromlist=['Position']).Position(
+            symbol='088350',
+            qty=527,
+            avg_entry_price=4735.0,
+            current_price=4925.0,
+            status='OPEN',
+        )
+        positions.upsert(position)
+
+        order = engine.submit_exit(
+            ExitSignal(symbol='088350', reason='take_profit', order_type='LIMIT', price=4925.0),
+            position,
+        )
+
+        self.assertIsNotNone(broker.last_request)
+        self.assertEqual('SELL', broker.last_request.side)
+        self.assertEqual('LIMIT', broker.last_request.order_type)
+        self.assertEqual(4925.0, broker.last_request.price)
+        saved = orders.find_by_id(order.id)
+        self.assertIsNotNone(saved)
+        self.assertEqual(4925.0, saved.price)
 
 
 if __name__ == "__main__":
