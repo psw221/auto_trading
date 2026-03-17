@@ -151,6 +151,7 @@ class FixtureBasedTests(unittest.TestCase):
         positions.upsert(second)
 
         portfolio.sync_from_broker()
+        portfolio.sync_from_broker()
 
         rows = positions.find_all_by_symbol("005930")
         active_rows = [row for row in rows if row.status in {"OPENING", "OPEN", "CLOSING"}]

@@ -191,6 +191,53 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertIn('사유=익절', daily_rendered)
         self.assertIn('Samsung Electronics(005930)', daily_rendered)
 
+    def test_build_dashboard_summary_dedupes_active_positions_by_symbol(self) -> None:
+        db_path = Path("data/test_dashboard_duplicates.db")
+        master_path = Path("data/test_dashboard_duplicates_universe.csv")
+        if db_path.exists():
+            db_path.unlink()
+        master_path.write_text(
+            "symbol,name,market,asset_type\n"
+            "005440,현대지에프홀딩스,KOSPI,STOCK\n"
+            "088350,한화생명,KOSPI,STOCK\n",
+            encoding="utf-8",
+        )
+        db = Database(db_path)
+        db.initialize()
+        with db.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO positions (
+                    symbol, name, strategy_name, status, qty, avg_entry_price, current_price,
+                    score_at_entry, target_weight, opened_at, closed_at, exit_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("005440", "현대지에프홀딩스", "swing", "OPEN", 161, 15471.428, 15600, 80, None, "2026-03-17T09:00:00+09:00", None, None, "2026-03-17T09:00:00+09:00", "2026-03-17T09:01:00+09:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO positions (
+                    symbol, name, strategy_name, status, qty, avg_entry_price, current_price,
+                    score_at_entry, target_weight, opened_at, closed_at, exit_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("005440", "현대지에프홀딩스", "swing", "OPEN", 161, 15471.428, 15600, 80, None, "2026-03-17T09:00:00+09:00", None, None, "2026-03-17T09:00:00+09:00", "2026-03-17T09:00:30+09:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO positions (
+                    symbol, name, strategy_name, status, qty, avg_entry_price, current_price,
+                    score_at_entry, target_weight, opened_at, closed_at, exit_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("088350", "한화생명", "swing", "OPEN", 527, 4735, 4705, 80, None, "2026-03-17T09:00:00+09:00", None, None, "2026-03-17T09:00:00+09:00", "2026-03-17T09:02:00+09:00"),
+            )
+        summary = build_dashboard_summary(db_path, master_path)
+        self.assertEqual(2, summary.active_positions)
+        self.assertEqual(2, len(summary.tracked_positions))
+        symbols = sorted(item['symbol'] for item in summary.tracked_positions)
+        self.assertEqual(['005440', '088350'], symbols)
+
 
 if __name__ == "__main__":
     unittest.main()

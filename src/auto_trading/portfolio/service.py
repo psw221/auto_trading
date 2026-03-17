@@ -21,6 +21,7 @@ class PortfolioService:
         local_positions = self.positions_repository.find_all()
         local_positions = self._compact_duplicate_local_positions(local_positions)
 
+        merged_symbols: set[str] = set()
         for local_position in local_positions:
             broker_position = broker_positions.get(local_position.symbol)
             if broker_position is None:
@@ -35,7 +36,10 @@ class PortfolioService:
                         payload={"symbol": local_position.symbol, "position_id": local_position.id},
                     )
                 continue
+            if local_position.symbol in merged_symbols:
+                continue
             self._merge_broker_position(local_position, broker_position)
+            merged_symbols.add(local_position.symbol)
 
         existing_symbols = {item.symbol for item in local_positions}
         for symbol, broker_position in broker_positions.items():

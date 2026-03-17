@@ -83,9 +83,10 @@ def build_dashboard_summary(
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     try:
-        active_positions = _count_positions(connection, ("OPENING", "OPEN", "CLOSING"))
-        opening_positions = _count_positions(connection, ("OPENING",))
-        closing_positions = _count_positions(connection, ("CLOSING",))
+        tracked_positions = _fetch_tracked_positions(connection)
+        active_positions = len(tracked_positions)
+        opening_positions = sum(1 for item in tracked_positions if item.get("status") == "OPENING")
+        closing_positions = sum(1 for item in tracked_positions if item.get("status") == "CLOSING")
         error_positions = _count_positions(connection, ("ERROR",))
         unknown_orders = _count_orders(connection, ("UNKNOWN",))
         open_orders = _count_orders(
@@ -120,7 +121,6 @@ def build_dashboard_summary(
             LIMIT 10
             """,
         )
-        tracked_positions = _fetch_tracked_positions(connection)
         today_targets = _fetch_today_targets(
             connection,
             universe_master_path=universe_master_path,
@@ -421,16 +421,27 @@ def _target_date(now: datetime | None) -> datetime.date:
 
 
 def _fetch_tracked_positions(connection: sqlite3.Connection) -> list[dict[str, object]]:
-    return _fetch_rows(
+    rows = _fetch_rows(
         connection,
         """
         SELECT symbol, name, status, qty, avg_entry_price, current_price, opened_at, updated_at
         FROM positions
         WHERE status IN ('OPENING', 'OPEN', 'CLOSING')
         ORDER BY updated_at DESC, id DESC
-        LIMIT 10
+        LIMIT 50
         """,
     )
+    return _dedupe_positions_by_symbol(rows)[:10]
+
+
+def _dedupe_positions_by_symbol(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    selected: dict[str, dict[str, object]] = {}
+    for row in rows:
+        symbol = str(row.get('symbol', ''))
+        if not symbol or symbol in selected:
+            continue
+        selected[symbol] = row
+    return list(selected.values())
 
 
 def _fetch_latest_market_scan(connection: sqlite3.Connection) -> dict[str, object]:
