@@ -469,9 +469,9 @@ def _fetch_today_fills(
     rows = _fetch_rows(
         connection,
         """
-        SELECT symbol, side, fill_qty, fill_price, filled_at
+        SELECT symbol, side, fill_qty, fill_price, filled_at, created_at
         FROM fills
-        ORDER BY filled_at DESC, id DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT 200
         """,
     )
@@ -480,7 +480,10 @@ def _fetch_today_fills(
     selected: list[dict[str, object]] = []
     for row in rows:
         filled_at = str(row.get('filled_at', ''))
-        filled_dt = _parse_datetime(filled_at)
+        created_at = str(row.get('created_at', ''))
+        created_dt = _parse_datetime(created_at)
+        fallback_date = created_dt.astimezone(SEOUL_TZ).date() if created_dt is not None else None
+        filled_dt = _parse_datetime(filled_at, fallback_date=fallback_date)
         if filled_dt is None or filled_dt.astimezone(SEOUL_TZ).date() != target_date:
             continue
         selected.append(
@@ -495,7 +498,6 @@ def _fetch_today_fills(
         )
     return selected[:limit]
 
-
 def _fetch_today_closed_trades(
     connection: sqlite3.Connection,
     *,
@@ -506,10 +508,12 @@ def _fetch_today_closed_trades(
     rows = _fetch_rows(
         connection,
         """
-        SELECT symbol, qty, entry_price, exit_price, gross_pnl, net_pnl, pnl_pct, entry_at, exit_at, exit_reason
-        FROM trade_logs
-        WHERE exit_at IS NOT NULL
-        ORDER BY exit_at DESC, id DESC
+        SELECT tl.symbol, tl.qty, tl.entry_price, tl.exit_price, tl.gross_pnl, tl.net_pnl, tl.pnl_pct, tl.entry_at, tl.exit_at, tl.exit_reason,
+               o.updated_at AS exit_recorded_at
+        FROM trade_logs tl
+        LEFT JOIN orders o ON o.id = tl.exit_order_id
+        WHERE tl.exit_at IS NOT NULL
+        ORDER BY COALESCE(o.updated_at, tl.created_at) DESC, tl.id DESC
         LIMIT 100
         """,
     )
@@ -518,7 +522,10 @@ def _fetch_today_closed_trades(
     selected: list[dict[str, object]] = []
     for row in rows:
         exit_at = str(row.get('exit_at', ''))
-        exit_dt = _parse_datetime(exit_at)
+        exit_recorded_at = str(row.get('exit_recorded_at', ''))
+        exit_recorded_dt = _parse_datetime(exit_recorded_at)
+        fallback_date = exit_recorded_dt.astimezone(SEOUL_TZ).date() if exit_recorded_dt is not None else None
+        exit_dt = _parse_datetime(exit_at, fallback_date=fallback_date)
         if exit_dt is None or exit_dt.astimezone(SEOUL_TZ).date() != target_date:
             continue
         selected.append(
@@ -537,7 +544,6 @@ def _fetch_today_closed_trades(
             }
         )
     return selected[:limit]
-
 
 def _fetch_today_error_events(
     connection: sqlite3.Connection,
@@ -698,8 +704,13 @@ def _format_exit_reason(value: object) -> str:
     reason = str(value or '').strip().upper()
     mapping = {
         'TAKEPROFIT': '익절',
+        'TAKE_PROFIT': '익절',
         'STOPLOSS': '손절',
+        'STOP_LOSS': '손절',
         'TIMEEXIT': '보유 기간 종료',
+        'TIME_EXIT': '보유 기간 종료',
+        'MA5BREAKDOWN': '5일선 이탈',
+        'MA5_BREAKDOWN': '5일선 이탈',
         'EXIT': '일반 청산',
     }
     return mapping.get(reason, str(value or '').strip() or '-')
@@ -722,12 +733,26 @@ def _parse_metadata(value: object) -> dict[str, object]:
         return {}
 
 
-def _parse_datetime(value: str) -> datetime | None:
+def _parse_datetime(value: str, *, fallback_date: object | None = None) -> datetime | None:
     if not value:
         return None
     try:
         dt = datetime.fromisoformat(value)
     except ValueError:
+        text = str(value).strip()
+        if len(text) == 6 and text.isdigit() and fallback_date is not None:
+            try:
+                return datetime(
+                    fallback_date.year,
+                    fallback_date.month,
+                    fallback_date.day,
+                    int(text[0:2]),
+                    int(text[2:4]),
+                    int(text[4:6]),
+                    tzinfo=SEOUL_TZ,
+                )
+            except (AttributeError, TypeError, ValueError):
+                return None
         return None
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -765,3 +790,10 @@ def _format_rows(rows: list[dict[str, object]], fields: tuple[str, ...]) -> list
         parts = [f"{field}={row.get(field)}" for field in fields]
         formatted.append(" | ".join(parts))
     return formatted
+
+
+
+
+
+
+

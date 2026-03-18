@@ -239,5 +239,162 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertEqual(['005440', '088350'], symbols)
 
 
+    def test_build_daily_report_summary_includes_broker_hhmmss_times(self) -> None:
+        db_path = Path("data/test_dashboard_broker_times.db")
+        master_path = Path("data/test_dashboard_broker_times_universe.csv")
+        if db_path.exists():
+            db_path.unlink()
+        master_path.write_text(
+            "symbol,name,market,asset_type\n"
+            "088350,한화생명,KOSPI,STOCK\n",
+            encoding="utf-8",
+        )
+        db = Database(db_path)
+        db.initialize()
+        with db.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO positions (
+                    id, symbol, name, strategy_name, status, qty, avg_entry_price, current_price,
+                    score_at_entry, target_weight, opened_at, closed_at, exit_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "088350", "한화생명", "swing", "CLOSED", 0, 4735, 5200, 80, None, "2026-03-17T14:35:01+09:00", "2026-03-18T09:48:58+09:00", "TAKE_PROFIT", "2026-03-17T14:35:01+09:00", "2026-03-18T09:48:58+09:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    id, client_order_id, broker_order_id, position_id, symbol, side, order_type, intent,
+                    price, qty, filled_qty, remaining_qty, status, submitted_at, last_broker_update_at,
+                    failure_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "order-1", "B1", 1, "088350", "BUY", "LIMIT", "ENTRY", 4735, 527, 527, 0, "FILLED", "2026-03-17T05:35:01+00:00", "2026-03-17T05:35:02+00:00", None, "2026-03-17T05:35:01+00:00", "2026-03-17T05:35:02+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    id, client_order_id, broker_order_id, position_id, symbol, side, order_type, intent,
+                    price, qty, filled_qty, remaining_qty, status, submitted_at, last_broker_update_at,
+                    failure_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (11, "order-11", "S1", 1, "088350", "SELL", "LIMIT", "TAKE_PROFIT", 5200, 527, 527, 0, "FILLED", "2026-03-18T00:48:57+00:00", "2026-03-18T00:48:58+00:00", None, "2026-03-18T00:48:57+00:00", "2026-03-18T00:48:58+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO fills (
+                    order_id, broker_fill_id, symbol, side, fill_price, fill_qty, fill_amount, filled_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (11, "S1", "088350", "SELL", 5200, 527, 2740400, "094858", "2026-03-18T00:48:58+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO trade_logs (
+                    position_id, symbol, strategy_name, entry_order_id, exit_order_id,
+                    entry_price, exit_price, qty, gross_pnl, net_pnl, pnl_pct, entry_at, exit_at, exit_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    1,
+                    "088350",
+                    "swing",
+                    1,
+                    11,
+                    4735,
+                    5200,
+                    527,
+                    245055,
+                    245055,
+                    9.82,
+                    "090001",
+                    "094858",
+                    "TAKE_PROFIT",
+                    "2026-03-17T00:10:00+00:00",
+                ),
+            )
+        now = datetime.fromisoformat("2026-03-18T16:30:00+09:00")
+        summary = build_daily_report_summary(db_path, master_path, now=now)
+        self.assertEqual(1, summary.today_fill_count)
+        self.assertEqual(['088350'], summary.traded_symbols)
+        self.assertEqual(1, summary.closed_trade_count)
+        self.assertEqual(245055.0, summary.realized_pnl)
+        rendered = format_daily_report_summary(summary)
+        self.assertIn('한화생명(088350) SELL 527주 @ 5,200원 (094858)', rendered)
+        self.assertIn('실현손익: +245,055원', rendered)
+
+    def test_build_daily_report_summary_excludes_old_hhmmss_records(self) -> None:
+        db_path = Path("data/test_dashboard_old_hhmmss.db")
+        master_path = Path("data/test_dashboard_old_hhmmss_universe.csv")
+        if db_path.exists():
+            db_path.unlink()
+        master_path.write_text(
+            "symbol,name,market,asset_type\n"
+            "034230,파라다이스,KOSPI,STOCK\n",
+            encoding="utf-8",
+        )
+        db = Database(db_path)
+        db.initialize()
+        with db.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO positions (
+                    id, symbol, name, strategy_name, status, qty, avg_entry_price, current_price,
+                    score_at_entry, target_weight, opened_at, closed_at, exit_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "034230", "파라다이스", "swing", "CLOSED", 0, 17450, 17390, 80, None, "2026-03-16T10:07:53+09:00", "2026-03-16T10:08:43+09:00", "MA5_BREAKDOWN", "2026-03-16T01:07:53+00:00", "2026-03-16T01:08:43+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    id, client_order_id, broker_order_id, position_id, symbol, side, order_type, intent,
+                    price, qty, filled_qty, remaining_qty, status, submitted_at, last_broker_update_at,
+                    failure_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "order-1", "B1", 1, "034230", "BUY", "LIMIT", "ENTRY", 17450, 143, 143, 0, "FILLED", "2026-03-16T01:07:53+00:00", "2026-03-16T01:07:54+00:00", None, "2026-03-16T01:07:53+00:00", "2026-03-16T01:07:54+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    id, client_order_id, broker_order_id, position_id, symbol, side, order_type, intent,
+                    price, qty, filled_qty, remaining_qty, status, submitted_at, last_broker_update_at,
+                    failure_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (2, "order-2", "S2", 1, "034230", "SELL", "MARKET", "MA5_BREAKDOWN", None, 143, 143, 0, "FILLED", "2026-03-16T01:08:42+00:00", "2026-03-16T01:08:43+00:00", None, "2026-03-16T01:08:42+00:00", "2026-03-16T01:08:43+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO fills (
+                    order_id, broker_fill_id, symbol, side, fill_price, fill_qty, fill_amount, filled_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (2, "S2", "034230", "SELL", 17390, 143, 2486770, "100843", "2026-03-16T01:08:43+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO trade_logs (
+                    position_id, symbol, strategy_name, entry_order_id, exit_order_id,
+                    entry_price, exit_price, qty, gross_pnl, net_pnl, pnl_pct, entry_at, exit_at, exit_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (1, "034230", "swing", 1, 2, 17450, 17390, 143, -8580, -8580, -0.34, "100753", "100843", "MA5_BREAKDOWN", "2026-03-16T01:07:54+00:00"),
+            )
+        now = datetime.fromisoformat("2026-03-18T16:30:00+09:00")
+        summary = build_daily_report_summary(db_path, master_path, now=now)
+        self.assertEqual(0, summary.today_fill_count)
+        self.assertEqual([], summary.traded_symbols)
+        self.assertEqual(0, summary.closed_trade_count)
+        self.assertEqual(0.0, summary.realized_pnl)
+
 if __name__ == "__main__":
     unittest.main()
+
+
+
+
+
+
