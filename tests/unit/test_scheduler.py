@@ -58,9 +58,10 @@ class _StubScorer:
 @dataclass(slots=True)
 class _StubSignalEngine:
     exit_signals: dict[str, object] = field(default_factory=dict)
+    entry_signals: list[object] = field(default_factory=list)
 
     def evaluate_entry(self, candidates: list[StrategyScore]) -> list[object]:
-        return []
+        return list(self.entry_signals)
 
     def evaluate_exit(self, position: object, snapshot: object) -> object | None:
         return self.exit_signals.get(getattr(position, 'symbol', ''))
@@ -77,9 +78,11 @@ class _StubPortfolioService:
 @dataclass(slots=True)
 class _StubRiskEngine:
     exit_allowed: bool = False
+    enter_allowed: bool = False
+    enter_reason: str = 'max_positions'
 
     def can_enter(self, signal: object, portfolio: object):
-        return type('Decision', (), {'allowed': False})()
+        return type('Decision', (), {'allowed': self.enter_allowed, 'reason': self.enter_reason})()
 
     def can_exit(self, signal: object, portfolio: object):
         return type('Decision', (), {'allowed': self.exit_allowed})()
@@ -92,12 +95,13 @@ class _StubRiskEngine:
 class _StubOrderEngine:
     reconciled: int = 0
     exits: list[tuple[object, object]] = field(default_factory=list)
+    entries: list[tuple[object, object]] = field(default_factory=list)
 
     def reconcile_unknown_orders(self) -> None:
         self.reconciled += 1
 
     def submit_entry(self, signal: object, sizing: object) -> None:
-        return None
+        self.entries.append((signal, sizing))
 
     def submit_exit(self, signal: object, position: object) -> None:
         self.exits.append((signal, position))
@@ -413,6 +417,36 @@ class SchedulerTargetsTest(unittest.TestCase):
         scheduler.run_market_scan()
         self.assertEqual(1, len(order_engine.exits))
         self.assertEqual('088350', order_engine.exits[0][0].symbol)
+
+    def test_run_market_scan_records_entry_skipped_when_risk_denies_entry(self) -> None:
+        scores = self._build_scores()
+        signal_engine = _StubSignalEngine(
+            entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
+        )
+        system_events_repository = _StubSystemEventsRepository()
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(enter_allowed=False, enter_reason='max_positions'),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+        )
+        scheduler.run_market_scan()
+        skipped_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'entry_skipped'
+        ]
+        self.assertEqual(1, len(skipped_events))
+        self.assertEqual('000000', skipped_events[0]['payload']['symbol'])
+        self.assertEqual('max_positions', skipped_events[0]['payload']['reason'])
+        self.assertEqual(0, len(order_engine.entries))
 
     def test_run_market_scan_records_quote_subscription_failure_without_crashing(self) -> None:
         scores = self._build_scores()

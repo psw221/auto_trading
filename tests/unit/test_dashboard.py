@@ -92,6 +92,21 @@ class DashboardSummaryTest(unittest.TestCase):
             )
             connection.execute(
                 """
+                INSERT INTO system_events (
+                    event_type, severity, component, message, payload_json, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "entry_skipped",
+                    "INFO",
+                    "scheduler",
+                    "Entry signal skipped due to risk decision.",
+                    '{"symbol": "005930", "reason": "max_positions", "score_total": 85, "price": 71000}',
+                    "2026-03-13T00:21:00+00:00",
+                ),
+            )
+            connection.execute(
+                """
                 INSERT INTO strategy_snapshots (
                     symbol, snapshot_time, score_total, volume_score, momentum_score, ma_score,
                     atr_score, rsi_score, price, ma5, ma20, rsi, atr, metadata_json, created_at
@@ -181,12 +196,17 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertAlmostEqual(2.14, daily_summary.average_closed_pnl_pct)
         self.assertEqual('005930', daily_summary.best_trade['symbol'])
         self.assertEqual('005930', daily_summary.worst_trade['symbol'])
+        self.assertEqual(1, len(daily_summary.missed_entries))
+        self.assertEqual('005930', daily_summary.missed_entries[0]['symbol'])
+        self.assertEqual('max_positions', daily_summary.missed_entries[0]['reason_code'])
         daily_rendered = format_daily_report_summary(daily_summary)
         self.assertIn('[AUTO_TRADING] 일일 리포트', daily_rendered)
         self.assertIn('실현손익: +3,000원', daily_rendered)
         self.assertIn('미실현손익: +2,000원', daily_rendered)
         self.assertIn('총손익: +5,000원', daily_rendered)
         self.assertIn('승률: 100.0%', daily_rendered)
+        self.assertIn('[놓친 기회]', daily_rendered)
+        self.assertIn('보유 종목 수 한도 도달', daily_rendered)
         self.assertIn('[청산 내역]', daily_rendered)
         self.assertIn('사유=익절', daily_rendered)
         self.assertIn('Samsung Electronics(005930)', daily_rendered)

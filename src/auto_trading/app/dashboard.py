@@ -43,6 +43,7 @@ class DailyReportSummary:
     traded_symbols: list[str]
     tracked_positions: list[dict[str, object]]
     today_trades: list[dict[str, object]]
+    missed_entries: list[dict[str, object]]
     closed_trades: list[dict[str, object]]
     realized_pnl: float
     unrealized_pnl: float
@@ -187,6 +188,7 @@ def build_daily_report_summary(
             traded_symbols=[],
             tracked_positions=[],
             today_trades=[],
+            missed_entries=[],
             closed_trades=[],
             realized_pnl=0.0,
             unrealized_pnl=0.0,
@@ -209,6 +211,7 @@ def build_daily_report_summary(
         active_positions = len(tracked_positions)
         today_trades = _fetch_today_fills(connection, universe_master_path=universe_master_path, now=now, limit=50)
         traded_symbols = sorted({str(item.get('symbol', '')) for item in today_trades if item.get('symbol')})
+        missed_entries = _fetch_today_missed_entries(connection, universe_master_path=universe_master_path, now=now, limit=5)
         closed_trades = _fetch_today_closed_trades(connection, universe_master_path=universe_master_path, now=now, limit=20)
         realized_pnl = sum(float(item.get('net_pnl') or 0.0) for item in closed_trades)
         unrealized_pnl = sum(_calculate_position_pnl(position) for position in tracked_positions)
@@ -237,6 +240,7 @@ def build_daily_report_summary(
         traded_symbols=traded_symbols,
         tracked_positions=tracked_positions,
         today_trades=today_trades,
+        missed_entries=missed_entries,
         closed_trades=closed_trades,
         realized_pnl=realized_pnl,
         unrealized_pnl=unrealized_pnl,
@@ -291,6 +295,18 @@ def format_daily_report_summary(summary: DailyReportSummary) -> str:
             display = f'{name}({symbol})' if name else symbol
             lines.append(
                 f"- {display} {trade.get('side')} {trade.get('fill_qty')}주 @ {trade.get('fill_price')}원 ({trade.get('filled_at')})"
+            )
+
+    lines.extend(['', '[놓친 기회]'])
+    if not summary.missed_entries:
+        lines.append('없음')
+    else:
+        for entry in summary.missed_entries:
+            name = entry.get('name') or ''
+            symbol = entry.get('symbol') or ''
+            display = f'{name}({symbol})' if name else symbol
+            lines.append(
+                f"- {display} | 점수={entry.get('score_total')} | 사유={entry.get('reason')}"
             )
 
     lines.extend(['', '[청산 내역]'])
@@ -497,6 +513,128 @@ def _fetch_today_fills(
             }
         )
     return selected[:limit]
+
+def _fetch_today_missed_entries(
+    connection: sqlite3.Connection,
+    *,
+    universe_master_path: Path | None,
+    now: datetime | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    targets = _fetch_today_targets(
+        connection,
+        universe_master_path=universe_master_path,
+        now=now,
+        limit=100,
+    )
+    if not targets:
+        return []
+
+    target_by_symbol = {str(item.get('symbol', '')): item for item in targets if item.get('symbol')}
+    rows = _fetch_rows(
+        connection,
+        """
+        SELECT event_type, message, payload_json, occurred_at
+        FROM system_events
+        WHERE event_type IN ('entry_skipped', 'order_blocked', 'duplicate_position', 'order_rejected', 'order_unknown', 'unknown_order_unresolved')
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 200
+        """,
+    )
+    target_date = _target_date(now)
+    selected_by_symbol: dict[str, dict[str, object]] = {}
+    for row in rows:
+        occurred_dt = _parse_datetime(str(row.get('occurred_at', '')))
+        if occurred_dt is None or occurred_dt.astimezone(SEOUL_TZ).date() != target_date:
+            continue
+        payload = _parse_metadata(row.get('payload_json'))
+        symbol = _resolve_event_symbol(connection, payload)
+        if not symbol or symbol not in target_by_symbol:
+            continue
+        reason_code = _map_missed_entry_reason(str(row.get('event_type', '')), payload)
+        if not reason_code:
+            continue
+        existing = selected_by_symbol.get(symbol)
+        priority = _missed_entry_priority(reason_code)
+        if existing is not None and priority >= int(existing.get('priority', 999)):
+            continue
+        target = target_by_symbol[symbol]
+        selected_by_symbol[symbol] = {
+            'symbol': symbol,
+            'name': target.get('name', ''),
+            'score_total': int(target.get('score_total') or 0),
+            'reason_code': reason_code,
+            'reason': _format_missed_entry_reason(reason_code, str(row.get('message', ''))),
+            'priority': priority,
+        }
+    missed_entries = list(selected_by_symbol.values())
+    missed_entries.sort(key=lambda item: (int(item.get('priority', 999)), -int(item.get('score_total', 0)), str(item.get('symbol', ''))))
+    for item in missed_entries:
+        item.pop('priority', None)
+    return missed_entries[:limit]
+
+
+def _resolve_event_symbol(connection: sqlite3.Connection, payload: dict[str, object]) -> str:
+    symbol = str(payload.get('symbol', '')).strip()
+    if symbol:
+        return symbol
+    order_id = payload.get('order_id')
+    try:
+        order_id_value = int(order_id)
+    except (TypeError, ValueError):
+        return ''
+    row = connection.execute(
+        "SELECT symbol FROM orders WHERE id = ? LIMIT 1",
+        (order_id_value,),
+    ).fetchone()
+    if row is None:
+        return ''
+    return str(row['symbol'] or '').strip()
+
+
+def _map_missed_entry_reason(event_type: str, payload: dict[str, object]) -> str:
+    normalized = event_type.strip().lower()
+    if normalized == 'entry_skipped':
+        reason = str(payload.get('reason', '')).strip().lower()
+        if reason == 'max_positions':
+            return 'max_positions'
+        return ''
+    if normalized == 'order_blocked':
+        return 'failsafe_blocked'
+    if normalized == 'duplicate_position':
+        return 'already_holding'
+    if normalized == 'order_rejected':
+        return 'order_rejected'
+    if normalized in {'order_unknown', 'unknown_order_unresolved'}:
+        return 'order_unknown'
+    return ''
+
+
+def _missed_entry_priority(reason_code: str) -> int:
+    priority = {
+        'order_rejected': 1,
+        'order_unknown': 2,
+        'failsafe_blocked': 3,
+        'already_holding': 4,
+        'max_positions': 5,
+    }
+    return priority.get(reason_code, 999)
+
+
+def _format_missed_entry_reason(reason_code: str, detail: str) -> str:
+    labels = {
+        'max_positions': '보유 종목 수 한도 도달',
+        'failsafe_blocked': 'Fail-safe 차단 상태',
+        'already_holding': '이미 보유 중인 종목',
+        'order_rejected': '주문 거절',
+        'order_unknown': '주문 상태 미확정',
+    }
+    label = labels.get(reason_code, reason_code)
+    detail_text = detail.strip()
+    if reason_code in {'order_rejected', 'order_unknown'} and detail_text:
+        return f'{label} - {detail_text}'
+    return label
+
 
 def _fetch_today_closed_trades(
     connection: sqlite3.Connection,

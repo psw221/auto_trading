@@ -124,9 +124,11 @@ class SchedulerService:
         portfolio = self.portfolio_service.snapshot()
         for signal in self.signal_engine.evaluate_entry(candidates):
             decision = self.risk_engine.can_enter(signal, portfolio)
-            if decision.allowed:
-                sizing = self.risk_engine.target_order_size(signal, portfolio)
-                self.order_engine.submit_entry(signal, sizing)
+            if not decision.allowed:
+                self._record_entry_skipped(signal, decision)
+                continue
+            sizing = self.risk_engine.target_order_size(signal, portfolio)
+            self.order_engine.submit_entry(signal, sizing)
 
     def run_post_market(self) -> None:
         if not self.trading_calendar.is_trading_day(datetime.now()):
@@ -332,6 +334,20 @@ class SchedulerService:
                 message="Failed to send daily report.",
                 payload={"error": str(exc)},
             )
+
+    def _record_entry_skipped(self, signal: object, decision: object) -> None:
+        self._record_system_event(
+            event_type='entry_skipped',
+            severity='INFO',
+            component='scheduler',
+            message='Entry signal skipped due to risk decision.',
+            payload={
+                'symbol': getattr(signal, 'symbol', ''),
+                'reason': getattr(decision, 'reason', ''),
+                'score_total': getattr(signal, 'score_total', None),
+                'price': getattr(signal, 'price', None),
+            },
+        )
 
     def _record_market_scan_summary(
         self,
