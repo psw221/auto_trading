@@ -35,7 +35,17 @@ class TelegramNotifier:
         items = normalized.get("items")
         if not isinstance(items, list) or not items:
             return
+        filtered_items = [
+            item for item in items
+            if isinstance(item, dict) and self._score_total(item) >= 70
+        ]
+        if not filtered_items:
+            return
+        normalized = dict(normalized)
+        normalized["items"] = filtered_items
         message = self._format_target_scores_message(normalized)
+        if not message:
+            return
         self._send_message(
             message=message,
             event_type="target_scores_notification",
@@ -148,12 +158,16 @@ class TelegramNotifier:
     def _format_target_scores_message(self, payload: dict[str, object]) -> str:
         snapshot_time = str(payload.get("snapshot_time", ""))
         items = payload.get("items", [])
+        qualifying_items = [
+            item for item in items
+            if isinstance(item, dict) and self._score_total(item) >= 70
+        ]
+        if not qualifying_items:
+            return ""
         lines = ["[AUTO_TRADING] 타겟 점수 TOP 10"]
         if snapshot_time:
             lines.append(f"기준 시각: {snapshot_time}")
-        for index, item in enumerate(items, start=1):
-            if not isinstance(item, dict):
-                continue
+        for index, item in enumerate(qualifying_items, start=1):
             symbol = str(item.get("symbol", ""))
             symbol_name = self._resolve_symbol_name(item)
             display_name = symbol if not symbol_name or symbol_name == symbol else f"{symbol_name} ({symbol})"
@@ -161,6 +175,13 @@ class TelegramNotifier:
             price = self._format_price(item.get("price", ""))
             lines.append(f"{index}. {display_name} | 점수 {score_total} | 현재가 {price}원")
         return "\n".join(lines)
+
+    @staticmethod
+    def _score_total(payload: dict[str, object]) -> int:
+        try:
+            return int(float(str(payload.get("score_total", 0))))
+        except (TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _format_daily_report_message(payload: dict[str, object]) -> str:

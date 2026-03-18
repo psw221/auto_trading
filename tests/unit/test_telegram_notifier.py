@@ -117,6 +117,52 @@ class TelegramNotifierTest(unittest.TestCase):
         self.assertIn("점수 92", row["message"])
 
 
+    def test_send_target_scores_skips_items_below_70(self) -> None:
+        notifier = TelegramNotifier(
+            _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
+            self.system_events,
+        )
+        with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
+            notifier.send_target_scores(
+                {
+                    "snapshot_time": "2026-03-13T10:30:00+09:00",
+                    "items": [
+                        {"symbol": "005930", "score_total": 92, "price": 71000},
+                        {"symbol": "069500", "score_total": 68, "price": 35000},
+                    ],
+                }
+            )
+        mocked.assert_called_once()
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT event_type, message FROM system_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual("target_scores_notification_sent", row["event_type"])
+        self.assertIn("Samsung Electronics (005930)", row["message"])
+        self.assertNotIn("KODEX 200", row["message"])
+        self.assertNotIn("점수 68", row["message"])
+
+    def test_send_target_scores_skips_when_all_items_below_70(self) -> None:
+        notifier = TelegramNotifier(
+            _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
+            self.system_events,
+        )
+        with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
+            notifier.send_target_scores(
+                {
+                    "snapshot_time": "2026-03-13T10:30:00+09:00",
+                    "items": [
+                        {"symbol": "005930", "score_total": 69, "price": 71000},
+                        {"symbol": "069500", "score_total": 68, "price": 35000},
+                    ],
+                }
+            )
+        mocked.assert_not_called()
+        with self.db.transaction() as connection:
+            count = connection.execute("SELECT COUNT(*) AS cnt FROM system_events").fetchone()["cnt"]
+        self.assertEqual(0, count)
+
+
     def test_send_daily_report_posts_to_telegram(self) -> None:
         notifier = TelegramNotifier(
             _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
