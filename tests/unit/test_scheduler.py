@@ -6,7 +6,7 @@ from pathlib import Path
 
 from auto_trading.app.scheduler import SchedulerService
 from auto_trading.common.trading_calendar import TradingCalendar
-from auto_trading.strategy.models import Bar, StrategyScore
+from auto_trading.strategy.models import Bar, MarketSnapshot, StrategyScore
 from auto_trading.universe.builder import UniverseItem
 
 
@@ -33,10 +33,17 @@ class _StubUniverseBuilder:
 @dataclass(slots=True)
 class _StubCollector:
     scores: dict[str, StrategyScore]
+    latest_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
+    short_bar_symbols: set[str] = field(default_factory=set)
 
     def get_recent_bars(self, symbol: str, window: int) -> list[Bar]:
-        score = self.scores[symbol]
-        return [Bar(symbol=symbol, close=score.price, volume=1)] * 30
+        score = self.scores.get(symbol)
+        close_price = score.price if score is not None else 1000.0
+        bar_count = 5 if symbol in self.short_bar_symbols else 30
+        return [Bar(symbol=symbol, close=close_price, volume=1)] * bar_count
+
+    def get_latest_snapshot(self, symbol: str) -> MarketSnapshot | None:
+        return self.latest_snapshots.get(symbol)
 
 
 @dataclass(slots=True)
@@ -44,31 +51,38 @@ class _StubScorer:
     scores: dict[str, StrategyScore]
 
     def score(self, bars: list[Bar]) -> StrategyScore:
-        return self.scores[bars[-1].symbol]
+        symbol = bars[-1].symbol
+        return self.scores.get(symbol, StrategyScore(symbol=symbol, score_total=0, price=float(bars[-1].close)))
 
 
 @dataclass(slots=True)
 class _StubSignalEngine:
+    exit_signals: dict[str, object] = field(default_factory=dict)
+
     def evaluate_entry(self, candidates: list[StrategyScore]) -> list[object]:
         return []
 
     def evaluate_exit(self, position: object, snapshot: object) -> object | None:
-        return None
+        return self.exit_signals.get(getattr(position, 'symbol', ''))
 
 
 @dataclass(slots=True)
 class _StubPortfolioService:
+    open_positions: list[object] = field(default_factory=list)
+
     def snapshot(self):
-        return type('Portfolio', (), {'open_positions': []})()
+        return type('Portfolio', (), {'open_positions': list(self.open_positions)})()
 
 
 @dataclass(slots=True)
 class _StubRiskEngine:
+    exit_allowed: bool = False
+
     def can_enter(self, signal: object, portfolio: object):
         return type('Decision', (), {'allowed': False})()
 
     def can_exit(self, signal: object, portfolio: object):
-        return type('Decision', (), {'allowed': False})()
+        return type('Decision', (), {'allowed': self.exit_allowed})()
 
     def target_order_size(self, signal: object, portfolio: object):
         return None
@@ -77,6 +91,7 @@ class _StubRiskEngine:
 @dataclass(slots=True)
 class _StubOrderEngine:
     reconciled: int = 0
+    exits: list[tuple[object, object]] = field(default_factory=list)
 
     def reconcile_unknown_orders(self) -> None:
         self.reconciled += 1
@@ -85,7 +100,7 @@ class _StubOrderEngine:
         return None
 
     def submit_exit(self, signal: object, position: object) -> None:
-        return None
+        self.exits.append((signal, position))
 
 
 @dataclass(slots=True)
@@ -202,9 +217,58 @@ class SchedulerTargetsTest(unittest.TestCase):
         scheduler.run_market_scan()
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual(0, universe_builder.rebuild_count)
-        self.assertEqual(1, len(subscribed))
-        self.assertEqual(12, len(subscribed[0]))
+        self.assertEqual(2, len(subscribed))
+        self.assertEqual(12, len(subscribed[-1]))
         self.assertEqual(1, len(notifier.payloads))
+
+    def test_run_market_scan_subscribes_union_of_universe_and_open_positions(self) -> None:
+        scores = self._build_scores()
+        subscribed: list[list[str]] = []
+        universe_builder = _StubUniverseBuilder(symbols=['000000', '000001'])
+        portfolio_service = _StubPortfolioService(
+            open_positions=[type('Position', (), {'symbol': '088350'})()]
+        )
+        scheduler = SchedulerService(
+            universe_builder=universe_builder,
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            quote_subscription_updater=subscribed.append,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(1, len(subscribed))
+        self.assertEqual(['000000', '000001', '088350'], subscribed[0])
+
+    def test_run_pre_market_subscribes_union_of_universe_and_open_positions(self) -> None:
+        scores = self._build_scores()
+        subscribed: list[list[str]] = []
+        current_items = [UniverseItem(symbol='000000', name='Name 000000')]
+        universe_builder = _StubUniverseBuilder(symbols=['000000'], current_items=current_items)
+        portfolio_service = _StubPortfolioService(
+            open_positions=[type('Position', (), {'symbol': '088350'})()]
+        )
+        scheduler = SchedulerService(
+            universe_builder=universe_builder,
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            quote_subscription_updater=subscribed.append,
+        )
+        scheduler.run_pre_market()
+        self.assertEqual(1, len(subscribed))
+        self.assertEqual(['000000', '088350'], subscribed[0])
 
     def test_run_market_scan_rebuilds_when_current_universe_missing(self) -> None:
         scores = self._build_scores()
@@ -228,8 +292,8 @@ class SchedulerTargetsTest(unittest.TestCase):
         scheduler.run_market_scan()
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual(1, universe_builder.rebuild_count)
-        self.assertEqual(1, len(subscribed))
-        self.assertEqual(12, len(subscribed[0]))
+        self.assertEqual(2, len(subscribed))
+        self.assertEqual(12, len(subscribed[-1]))
         self.assertEqual(1, len(notifier.payloads))
 
     def test_run_market_scan_records_universe_restore_failure(self) -> None:
@@ -320,6 +384,64 @@ class SchedulerTargetsTest(unittest.TestCase):
         scheduler.tick(__import__('datetime').datetime(2026, 3, 16, 15, 30))
         scheduler.tick(__import__('datetime').datetime(2026, 3, 16, 15, 31))
         self.assertEqual(1, len(notifier.daily_reports))
+
+
+    def test_run_market_scan_exits_open_position_from_latest_snapshot_without_20_bars(self) -> None:
+        scores = self._build_scores()
+        collector = _StubCollector(
+            scores=scores,
+            latest_snapshots={'088350': MarketSnapshot(symbol='088350', price=5210.0)},
+            short_bar_symbols={'088350'},
+        )
+        signal = type('ExitSignal', (), {'symbol': '088350', 'reason': 'take_profit', 'order_type': 'LIMIT', 'price': 5210.0})()
+        signal_engine = _StubSignalEngine(exit_signals={'088350': signal})
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=collector,
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 4735.0, 'current_price': 5210.0})()]
+            ),
+            risk_engine=_StubRiskEngine(exit_allowed=True),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(1, len(order_engine.exits))
+        self.assertEqual('088350', order_engine.exits[0][0].symbol)
+
+    def test_run_market_scan_records_quote_subscription_failure_without_crashing(self) -> None:
+        scores = self._build_scores()
+        system_events_repository = _StubSystemEventsRepository()
+
+        def _failing_subscribe(symbols: list[str]) -> None:
+            raise ConnectionAbortedError('socket is already closed')
+
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            quote_subscription_updater=_failing_subscribe,
+        )
+        scheduler.run_market_scan()
+        failure_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'quote_subscription_update_failed'
+        ]
+        self.assertEqual(1, len(failure_events))
+        self.assertIn('socket is already closed', failure_events[0]['payload']['error'])
 
 
 if __name__ == '__main__':

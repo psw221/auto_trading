@@ -109,17 +109,29 @@ class KISWebSocketClient:
     _socket: object | None = field(init=False, default=None)
     _pending_events: deque[BrokerRealtimeEvent] = field(init=False, default_factory=deque)
     _aes_context_by_trid: dict[str, tuple[str, str]] = field(init=False, default_factory=dict)
+    _active_quote_subscriptions: set[str] = field(init=False, default_factory=set)
 
     def connect(self) -> None:
         self._approval_key = self.kis_client.get_approval_key()
+        self._active_quote_subscriptions.clear()
         if websocket is None:
             return None
         self._socket = websocket.create_connection(self.settings.kis_ws_url, timeout=1)
 
     def subscribe_quotes(self, symbols: list[str]) -> None:
-        self.subscribed_symbols = list(symbols)
+        normalized: list[str] = []
+        seen: set[str] = set()
         for symbol in symbols:
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            normalized.append(symbol)
+        self.subscribed_symbols = normalized
+        for symbol in normalized:
+            if symbol in self._active_quote_subscriptions:
+                continue
             self._send_subscription(self._quote_tr_id(), symbol)
+            self._active_quote_subscriptions.add(symbol)
 
     def subscribe_order_events(self) -> None:
         self._send_subscription(self._order_event_tr_id(), self.settings.kis_user_id or "ORDER")
@@ -131,6 +143,7 @@ class KISWebSocketClient:
         return events
 
     def disconnect(self) -> None:
+        self._active_quote_subscriptions.clear()
         if self._socket is None:
             return None
         try:

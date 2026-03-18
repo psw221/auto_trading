@@ -68,6 +68,18 @@
 
 당일 전략 후보 중 실제 주문으로 이어지지 않은 종목과 그 사유를 리포트에 포함한다.
 
+참조 문서:
+
+- `docs/auto_trading_missed_entry_reason_spec_v0_1.md`
+
+1차 구현 범위:
+
+- `max_positions`
+- `failsafe_blocked`
+- `already_holding`
+- `order_rejected`
+- `order_unknown`
+
 세부 TODO:
 
 - [ ] 당일 후보 종목 중 미진입 케이스 수집 로직 정리

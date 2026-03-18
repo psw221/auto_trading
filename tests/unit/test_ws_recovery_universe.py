@@ -198,6 +198,50 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual("quote", event.event_type)
         self.assertEqual("71000", event.payload["price"])
 
+
+    def test_websocket_client_dedupes_quote_subscriptions_per_connection(self) -> None:
+        class _Socket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+            def close(self) -> None:
+                return None
+
+        client = KISWebSocketClient(build_settings(), KISClientStub())
+        client._approval_key = "approval"
+        client._socket = _Socket()
+        client.subscribe_quotes(["005930", "005930", "088350"])
+        client.subscribe_quotes(["005930", "088350"])
+        self.assertEqual(["005930", "088350"], client.subscribed_symbols)
+        self.assertEqual(2, len(client._socket.sent))
+
+    def test_websocket_client_resubscribes_after_disconnect(self) -> None:
+        class _Socket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+            def close(self) -> None:
+                return None
+
+        client = KISWebSocketClient(build_settings(), KISClientStub())
+        first_socket = _Socket()
+        client._approval_key = "approval"
+        client._socket = first_socket
+        client.subscribe_quotes(["005930"])
+        client.disconnect()
+        second_socket = _Socket()
+        client._approval_key = "approval"
+        client._socket = second_socket
+        client.subscribe_quotes(["005930"])
+        self.assertEqual(1, len(first_socket.sent))
+        self.assertEqual(1, len(second_socket.sent))
+
     def test_recovery_service_clears_error_position_from_fixture_state(self) -> None:
         db_path = Path("data/test_fixture_recovery.db")
         if db_path.exists():

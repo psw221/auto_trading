@@ -65,7 +65,10 @@ class SchedulerService:
         self._refresh_universe_master()
         self.recovery_service.recover()
         items = self._rebuild_or_restore_market_universe()
-        self._update_quote_subscriptions([item.symbol for item in items])
+        portfolio = self.portfolio_service.snapshot()
+        self._update_quote_subscriptions(
+            self._build_quote_subscription_symbols([item.symbol for item in items], portfolio)
+        )
 
     def run_market_scan(self) -> None:
         if not self.trading_calendar.is_trading_day(datetime.now()):
@@ -84,21 +87,13 @@ class SchedulerService:
             return
 
         portfolio = self.portfolio_service.snapshot()
+        self._update_quote_subscriptions(
+            self._build_quote_subscription_symbols(self.universe_builder.symbols, portfolio)
+        )
         for position in portfolio.open_positions:
-            bars = self.market_data_collector.get_recent_bars(position.symbol, 30)
-            if len(bars) < 20:
+            snapshot = self._build_position_exit_snapshot(position)
+            if snapshot is None:
                 continue
-            score = self.strategy_scorer.score(bars)
-            snapshot = MarketSnapshot(
-                symbol=position.symbol,
-                price=score.price,
-                ma5=score.ma5,
-                ma20=score.ma20,
-                rsi=score.rsi,
-                atr=score.atr,
-                momentum_20=score.momentum_20,
-                volume_ratio=score.volume_ratio,
-            )
             exit_signal = self.signal_engine.evaluate_exit(position, snapshot)
             if exit_signal is None:
                 continue
@@ -167,7 +162,35 @@ class SchedulerService:
     def _update_quote_subscriptions(self, symbols: list[str]) -> None:
         if self.quote_subscription_updater is None:
             return
-        self.quote_subscription_updater(symbols)
+        try:
+            self.quote_subscription_updater(symbols)
+        except Exception as exc:
+            self._record_system_event(
+                event_type="quote_subscription_update_failed",
+                severity="ERROR",
+                component="scheduler",
+                message="Failed to update quote subscriptions.",
+                payload={"error": str(exc)},
+            )
+
+    @staticmethod
+    def _build_quote_subscription_symbols(symbols: list[str], portfolio: object | None) -> list[str]:
+        selected: list[str] = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            selected.append(symbol)
+        if portfolio is None:
+            return selected
+        for position in getattr(portfolio, 'open_positions', []):
+            symbol = getattr(position, 'symbol', '')
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            selected.append(symbol)
+        return selected
 
     def _refresh_universe_master(self) -> None:
         if self.universe_master_refresher is None:
@@ -248,7 +271,40 @@ class SchedulerService:
                 payload={"error": str(exc)},
             )
             return
-        self._update_quote_subscriptions([item.symbol for item in items])
+        portfolio = self.portfolio_service.snapshot()
+        self._update_quote_subscriptions(
+            self._build_quote_subscription_symbols([item.symbol for item in items], portfolio)
+        )
+
+    def _build_position_exit_snapshot(self, position: object) -> MarketSnapshot | None:
+        latest_snapshot = self.market_data_collector.get_latest_snapshot(position.symbol)
+        bars = self.market_data_collector.get_recent_bars(position.symbol, 30)
+
+        if len(bars) >= 20:
+            score = self.strategy_scorer.score(bars)
+            return MarketSnapshot(
+                symbol=position.symbol,
+                price=score.price,
+                ma5=score.ma5,
+                ma20=score.ma20,
+                rsi=score.rsi,
+                atr=score.atr,
+                momentum_20=score.momentum_20,
+                volume_ratio=score.volume_ratio,
+            )
+
+        if latest_snapshot is not None and latest_snapshot.price > 0:
+            return MarketSnapshot(
+                symbol=position.symbol,
+                price=latest_snapshot.price,
+                volume=latest_snapshot.volume,
+                turnover=latest_snapshot.turnover,
+            )
+
+        current_price = float(getattr(position, 'current_price', 0.0) or 0.0)
+        if current_price > 0:
+            return MarketSnapshot(symbol=position.symbol, price=current_price)
+        return None
 
     def _send_daily_report(self) -> None:
         if self.notifier is None or self.daily_report_builder is None:
