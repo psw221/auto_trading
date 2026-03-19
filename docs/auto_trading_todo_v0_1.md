@@ -108,6 +108,7 @@
 참조 문서:
 
 - `docs/auto_trading_rest_migration_plan_v0_1.md`
+- `docs/auto_trading_rest_todo_v0_2.md`
 
 세부 TODO:
 

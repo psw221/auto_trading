@@ -25,6 +25,7 @@ class DashboardSummary:
     tracked_positions: list[dict[str, object]]
     today_targets: list[dict[str, object]]
     latest_market_scan: dict[str, object]
+    latest_market_data_refresh: dict[str, object]
 
 
 @dataclass(slots=True)
@@ -57,6 +58,7 @@ class DailyReportSummary:
     error_events: list[dict[str, object]]
     order_issue_count: int
     latest_market_scan: dict[str, object]
+    latest_market_data_refresh: dict[str, object]
 
 
 def build_dashboard_summary(
@@ -79,6 +81,7 @@ def build_dashboard_summary(
             tracked_positions=[],
             today_targets=[],
             latest_market_scan={},
+            latest_market_data_refresh={},
         )
 
     connection = sqlite3.connect(db_path)
@@ -129,6 +132,7 @@ def build_dashboard_summary(
             limit=10,
         )
         latest_market_scan = _fetch_latest_market_scan(connection)
+        latest_market_data_refresh = _fetch_latest_market_data_refresh(connection)
     finally:
         connection.close()
 
@@ -146,6 +150,7 @@ def build_dashboard_summary(
         tracked_positions=tracked_positions,
         today_targets=today_targets,
         latest_market_scan=latest_market_scan,
+        latest_market_data_refresh=latest_market_data_refresh,
     )
 
 
@@ -202,6 +207,7 @@ def build_daily_report_summary(
             error_events=[],
             order_issue_count=0,
             latest_market_scan={},
+            latest_market_data_refresh={},
         )
 
     connection = sqlite3.connect(db_path)
@@ -229,6 +235,7 @@ def build_daily_report_summary(
         error_events = _fetch_today_error_events(connection, now=now, limit=10)
         order_issue_count = _count_today_order_issues(connection, now=now)
         latest_market_scan = _fetch_latest_market_scan(connection)
+        latest_market_data_refresh = _fetch_latest_market_data_refresh(connection)
     finally:
         connection.close()
 
@@ -254,6 +261,7 @@ def build_daily_report_summary(
         error_events=error_events,
         order_issue_count=order_issue_count,
         latest_market_scan=latest_market_scan,
+        latest_market_data_refresh=latest_market_data_refresh,
     )
 
 
@@ -389,6 +397,16 @@ def format_dashboard_summary(summary: DashboardSummary, db_path: Path) -> str:
     )
     lines.extend([
         "",
+        "[latest_market_data_refresh]",
+    ])
+    lines.extend(
+        _format_rows(
+            [summary.latest_market_data_refresh] if summary.latest_market_data_refresh else [],
+            ("snapshot_time", "requested_count", "attempted_count", "refreshed_count", "skipped_count", "priority_count", "failed_count", "stale_symbol_count", "latest_refresh_at", "failed_symbols", "skipped_symbols", "stale_symbols"),
+        )
+    )
+    lines.extend([
+        "",
         "[tracked_positions]",
     ])
     lines.extend(
@@ -466,6 +484,20 @@ def _fetch_latest_market_scan(connection: sqlite3.Connection) -> dict[str, objec
         SELECT payload_json
         FROM system_events
         WHERE event_type = 'market_scan_summary'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return {}
+    return _parse_metadata(row['payload_json'])
+
+def _fetch_latest_market_data_refresh(connection: sqlite3.Connection) -> dict[str, object]:
+    row = connection.execute(
+        """
+        SELECT payload_json
+        FROM system_events
+        WHERE event_type = 'market_data_refresh_summary'
         ORDER BY id DESC
         LIMIT 1
         """

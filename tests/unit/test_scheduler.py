@@ -35,12 +35,30 @@ class _StubCollector:
     scores: dict[str, StrategyScore]
     latest_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
     short_bar_symbols: set[str] = field(default_factory=set)
+    refresh_summary: dict[str, object] = field(default_factory=lambda: {
+        'snapshot_time': '2026-03-19T06:00:00+00:00',
+        'requested_count': 0,
+        'refreshed_count': 0,
+        'failed_count': 0,
+        'stale_symbol_count': 0,
+        'latest_refresh_at': '2026-03-19T06:00:00+00:00',
+        'failed_symbols': [],
+        'stale_symbols': [],
+    })
 
     def get_recent_bars(self, symbol: str, window: int) -> list[Bar]:
         score = self.scores.get(symbol)
         close_price = score.price if score is not None else 1000.0
         bar_count = 5 if symbol in self.short_bar_symbols else 30
         return [Bar(symbol=symbol, close=close_price, volume=1)] * bar_count
+
+
+    def build_refresh_summary(self, symbols: list[str], *, stale_after_seconds: int, now=None) -> dict[str, object]:
+        summary = dict(self.refresh_summary)
+        summary.setdefault('requested_count', len(symbols))
+        if summary.get('requested_count') == 0:
+            summary['requested_count'] = len(symbols)
+        return summary
 
     def get_latest_snapshot(self, symbol: str) -> MarketSnapshot | None:
         return self.latest_snapshots.get(symbol)
@@ -216,13 +234,13 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             notifier=notifier,
-            market_data_refresher=refreshed.append,
+            market_data_refresher=lambda request: refreshed.append(request),
         )
         scheduler.run_market_scan()
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual(0, universe_builder.rebuild_count)
         self.assertEqual(1, len(refreshed))
-        self.assertEqual(12, len(refreshed[-1]))
+        self.assertEqual(12, len(refreshed[-1]['requested_symbols']))
         self.assertEqual(1, len(notifier.payloads))
 
     def test_run_market_scan_refreshes_rest_data_for_union_of_universe_and_open_positions(self) -> None:
@@ -243,11 +261,13 @@ class SchedulerTargetsTest(unittest.TestCase):
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
-            market_data_refresher=refreshed.append,
+            market_data_refresher=lambda request: refreshed.append(request),
         )
         scheduler.run_market_scan()
         self.assertEqual(1, len(refreshed))
-        self.assertEqual(['000000', '000001', '088350'], refreshed[0])
+        self.assertEqual(['088350'], refreshed[0]['priority_symbols'])
+        self.assertEqual(['000000', '000001'], refreshed[0]['scan_symbols'])
+        self.assertEqual(['088350', '000000', '000001'], refreshed[0]['requested_symbols'])
 
     def test_run_pre_market_refreshes_rest_data_for_union_of_universe_and_open_positions(self) -> None:
         scores = self._build_scores()
@@ -268,11 +288,13 @@ class SchedulerTargetsTest(unittest.TestCase):
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
-            market_data_refresher=refreshed.append,
+            market_data_refresher=lambda request: refreshed.append(request),
         )
         scheduler.run_pre_market()
         self.assertEqual(1, len(refreshed))
-        self.assertEqual(['000000', '088350'], refreshed[0])
+        self.assertEqual(['088350'], refreshed[0]['priority_symbols'])
+        self.assertEqual(['000000'], refreshed[0]['scan_symbols'])
+        self.assertEqual(['088350', '000000'], refreshed[0]['requested_symbols'])
 
     def test_run_market_scan_rebuilds_when_current_universe_missing(self) -> None:
         scores = self._build_scores()
@@ -291,13 +313,13 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             notifier=notifier,
-            market_data_refresher=refreshed.append,
+            market_data_refresher=lambda request: refreshed.append(request),
         )
         scheduler.run_market_scan()
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual(1, universe_builder.rebuild_count)
         self.assertEqual(1, len(refreshed))
-        self.assertEqual(12, len(refreshed[-1]))
+        self.assertEqual(12, len(refreshed[-1]['requested_symbols']))
         self.assertEqual(1, len(notifier.payloads))
 
     def test_run_market_scan_records_universe_restore_failure(self) -> None:
@@ -355,14 +377,16 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             system_events_repository=system_events_repository,
-            market_data_refresher=refreshed.append,
+            market_data_refresher=lambda request: refreshed.append(request),
         )
         scheduler.run_pre_market()
         self.assertEqual(1, universe_builder.rebuild_count)
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual([item.symbol for item in current_items], universe_builder.symbols)
         self.assertEqual(1, len(refreshed))
-        self.assertEqual([item.symbol for item in current_items], refreshed[0])
+        self.assertEqual([], refreshed[0]['priority_symbols'])
+        self.assertEqual([item.symbol for item in current_items], refreshed[0]['scan_symbols'])
+        self.assertEqual([item.symbol for item in current_items], refreshed[0]['requested_symbols'])
         warning_events = [
             event for event in system_events_repository.events
             if event['event_type'] == 'market_universe_rebuild_empty'
@@ -448,6 +472,33 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual('max_positions', skipped_events[0]['payload']['reason'])
         self.assertEqual(0, len(order_engine.entries))
 
+
+    def test_market_data_refresh_request_prioritizes_open_positions(self) -> None:
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000', '000001', '088350']),
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(
+                open_positions=[
+                    type('Position', (), {'symbol': '088350'})(),
+                    type('Position', (), {'symbol': '005930'})(),
+                ]
+            ),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+        )
+        request = scheduler._build_market_data_refresh_request(
+            ['000000', '000001', '088350'],
+            scheduler.portfolio_service.snapshot(),
+        )
+        self.assertEqual(['088350', '005930'], request['priority_symbols'])
+        self.assertEqual(['000000', '000001'], request['scan_symbols'])
+        self.assertEqual(['088350', '005930', '000000', '000001'], request['requested_symbols'])
+
     def test_run_market_scan_uses_rest_market_data_refresher(self) -> None:
         scores = self._build_scores()
         refreshed: list[list[str]] = []
@@ -462,10 +513,55 @@ class SchedulerTargetsTest(unittest.TestCase):
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
-            market_data_refresher=refreshed.append,
+            market_data_refresher=lambda request: refreshed.append(request),
         )
         scheduler.run_market_scan()
-        self.assertEqual([['000000', '000001']], refreshed)
+        self.assertEqual(['000000', '000001'], refreshed[0]['scan_symbols'])
+        self.assertEqual([], refreshed[0]['priority_symbols'])
+        self.assertEqual(['000000', '000001'], refreshed[0]['requested_symbols'])
+
+
+    def test_run_market_scan_records_market_data_refresh_summary(self) -> None:
+        scores = self._build_scores()
+        system_events_repository = _StubSystemEventsRepository()
+        collector = _StubCollector(
+            scores=scores,
+            refresh_summary={
+                'snapshot_time': '2026-03-19T06:14:49+00:00',
+                'requested_count': 3,
+                'refreshed_count': 2,
+                'failed_count': 1,
+                'stale_symbol_count': 1,
+                'latest_refresh_at': '2026-03-19T06:14:48+00:00',
+                'failed_symbols': ['088350'],
+                'stale_symbols': ['088350'],
+            },
+        )
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
+            market_data_collector=collector,
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            market_data_refresher=lambda request: {'attempted_count': 2, 'skipped_count': 1, 'priority_count': 0},
+        )
+        scheduler.run_market_scan()
+        refresh_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'market_data_refresh_summary'
+        ]
+        self.assertEqual(1, len(refresh_events))
+        self.assertEqual(3, refresh_events[0]['payload']['requested_count'])
+        self.assertEqual(1, refresh_events[0]['payload']['failed_count'])
+        self.assertEqual(2, refresh_events[0]['payload']['attempted_count'])
+        self.assertEqual(1, refresh_events[0]['payload']['skipped_count'])
+        self.assertEqual(['088350'], refresh_events[0]['payload']['stale_symbols'])
 
     def test_run_market_scan_records_market_data_refresh_failure_without_crashing(self) -> None:
         scores = self._build_scores()

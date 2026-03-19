@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from auto_trading.common.time import utc_now
+
 from auto_trading.app.dashboard import build_daily_report_summary, format_daily_report_summary
 from auto_trading.app.scheduler import SchedulerService
 from auto_trading.app.runtime import RuntimeService
@@ -164,40 +166,85 @@ def _refresh_holiday_calendar(settings: Settings) -> None:
     )
 
 
-def _refresh_market_data_from_rest(symbols: list[str], kis_client: KISClient, market_data_collector: MarketDataCollector) -> None:
+def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISClient, market_data_collector: MarketDataCollector) -> dict[str, object]:
+    priority_symbols = [str(symbol) for symbol in (request.get('priority_symbols') or []) if str(symbol)]
+    scan_symbols = [str(symbol) for symbol in (request.get('scan_symbols') or []) if str(symbol)]
+    refresh_interval_seconds = int(request.get('universe_refresh_interval_seconds') or 90)
+    now = utc_now()
+    requested_symbols = priority_symbols + [symbol for symbol in scan_symbols if symbol not in set(priority_symbols)]
+    attempted_count = 0
+    refreshed_count = 0
+    skipped_count = 0
+    failed_symbols: list[str] = []
+    skipped_symbols: list[str] = []
+    priority_seen = set(priority_symbols)
+
+    def _should_skip(symbol: str, *, force: bool) -> bool:
+        if force:
+            return False
+        status = market_data_collector.cache.get_refresh_status(symbol)
+        if status is None or not status.last_success_at or status.last_failure_at:
+            return False
+        try:
+            last_success = datetime.fromisoformat(status.last_success_at)
+        except ValueError:
+            return False
+        return (now - last_success).total_seconds() < refresh_interval_seconds
+
     seen: set[str] = set()
-    for symbol in symbols:
+    for symbol in requested_symbols:
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
-        current = kis_client.get_current_price(symbol)
-        history = kis_client.get_daily_bars(symbol, lookback_days=30)
-        bars = [
-            Bar(
+        force_refresh = symbol in priority_seen
+        if _should_skip(symbol, force=force_refresh):
+            skipped_count += 1
+            skipped_symbols.append(symbol)
+            continue
+        attempted_count += 1
+        try:
+            current = kis_client.get_current_price(symbol)
+            history = kis_client.get_daily_bars(symbol, lookback_days=30)
+            bars = [
+                Bar(
+                    symbol=symbol,
+                    open=float(item.get('open') or 0.0),
+                    high=float(item.get('high') or 0.0),
+                    low=float(item.get('low') or 0.0),
+                    close=float(item.get('close') or 0.0),
+                    volume=float(item.get('volume') or 0.0),
+                    turnover=float(item.get('turnover') or 0.0),
+                )
+                for item in reversed(history)
+                if float(item.get('close') or 0.0) > 0
+            ]
+            latest_price = float(current.get('price') or 0.0)
+            if bars and latest_price > 0:
+                latest_bar = bars[-1]
+                latest_bar.close = latest_price
+                latest_bar.high = max(latest_bar.high, latest_price) if latest_bar.high else latest_price
+                if latest_bar.low > 0:
+                    latest_bar.low = min(latest_bar.low, latest_price)
+                else:
+                    latest_bar.low = latest_price
+                latest_bar.turnover = float(current.get('turnover') or latest_bar.turnover)
+            snapshot = MarketSnapshot(
                 symbol=symbol,
-                open=float(item.get('open') or 0.0),
-                high=float(item.get('high') or 0.0),
-                low=float(item.get('low') or 0.0),
-                close=float(item.get('close') or 0.0),
-                volume=float(item.get('volume') or 0.0),
-                turnover=float(item.get('turnover') or 0.0),
+                price=latest_price if latest_price > 0 else (bars[-1].close if bars else 0.0),
+                turnover=float(current.get('turnover') or 0.0),
             )
-            for item in reversed(history)
-            if float(item.get('close') or 0.0) > 0
-        ]
-        latest_price = float(current.get('price') or 0.0)
-        if bars and latest_price > 0:
-            latest_bar = bars[-1]
-            latest_bar.close = latest_price
-            latest_bar.high = max(latest_bar.high, latest_price) if latest_bar.high else latest_price
-            if latest_bar.low > 0:
-                latest_bar.low = min(latest_bar.low, latest_price)
-            else:
-                latest_bar.low = latest_price
-            latest_bar.turnover = float(current.get('turnover') or latest_bar.turnover)
-        snapshot = MarketSnapshot(
-            symbol=symbol,
-            price=latest_price if latest_price > 0 else (bars[-1].close if bars else 0.0),
-            turnover=float(current.get('turnover') or 0.0),
-        )
-        market_data_collector.set_rest_market_data(symbol, snapshot, bars)
+            market_data_collector.set_rest_market_data(symbol, snapshot, bars, refreshed_at=now)
+            refreshed_count += 1
+        except Exception as exc:
+            market_data_collector.record_refresh_failure(symbol, str(exc), occurred_at=now)
+            failed_symbols.append(symbol)
+    return {
+        'requested_count': len(requested_symbols),
+        'attempted_count': attempted_count,
+        'refreshed_count': refreshed_count,
+        'skipped_count': skipped_count,
+        'failed_count': len(failed_symbols),
+        'failed_symbols': failed_symbols[:10],
+        'skipped_symbols': skipped_symbols[:10],
+        'priority_count': len(priority_symbols),
+    }

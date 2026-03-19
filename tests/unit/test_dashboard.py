@@ -97,6 +97,21 @@ class DashboardSummaryTest(unittest.TestCase):
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    "market_data_refresh_summary",
+                    "INFO",
+                    "scheduler",
+                    "Recorded latest market data refresh summary.",
+                    '{"snapshot_time": "2026-03-13T00:20:05+00:00", "requested_count": 50, "attempted_count": 20, "refreshed_count": 18, "skipped_count": 30, "priority_count": 2, "failed_count": 2, "stale_symbol_count": 1, "latest_refresh_at": "2026-03-13T00:20:05+00:00", "failed_symbols": ["000660"], "skipped_symbols": ["005930"], "stale_symbols": ["000660"]}',
+                    "2026-03-13T00:20:05+00:00",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO system_events (
+                    event_type, severity, component, message, payload_json, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
                     "entry_skipped",
                     "INFO",
                     "scheduler",
@@ -170,10 +185,19 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertEqual("Samsung Electronics", summary.today_targets[0]["name"])
         self.assertEqual(50, summary.latest_market_scan["universe_count"])
         self.assertEqual(18, summary.latest_market_scan["scored_count"])
+        self.assertEqual(18, summary.latest_market_data_refresh["refreshed_count"])
+        self.assertEqual(20, summary.latest_market_data_refresh["attempted_count"])
+        self.assertEqual(30, summary.latest_market_data_refresh["skipped_count"])
+        self.assertEqual(1, summary.latest_market_data_refresh["stale_symbol_count"])
         rendered = format_dashboard_summary(summary, db_path)
         self.assertIn("active_positions=1", rendered)
         self.assertIn("[latest_market_scan]", rendered)
         self.assertIn("qualified_count=3", rendered)
+        self.assertIn("[latest_market_data_refresh]", rendered)
+        self.assertIn("attempted_count=20", rendered)
+        self.assertIn("skipped_count=30", rendered)
+        self.assertIn("failed_count=2", rendered)
+        self.assertIn("stale_symbol_count=1", rendered)
         self.assertIn("[tracked_positions]", rendered)
         self.assertIn("status=OPEN", rendered)
         self.assertIn("[today_targets]", rendered)

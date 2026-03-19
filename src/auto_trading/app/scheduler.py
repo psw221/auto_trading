@@ -36,6 +36,8 @@ class SchedulerService:
     daily_report_builder: object | None = None
     market_data_refresher: object | None = None
     market_scan_interval_seconds: float = 30.0
+    market_data_stale_after_seconds: int = 120
+    universe_refresh_interval_seconds: int = 90
     loop_sleep_seconds: float = 1.0
     _last_pre_market_run_date: str | None = field(init=False, default=None)
     _last_post_market_run_date: str | None = field(init=False, default=None)
@@ -67,7 +69,7 @@ class SchedulerService:
         items = self._rebuild_or_restore_market_universe()
         portfolio = self.portfolio_service.snapshot()
         self._refresh_market_data(
-            self._build_quote_subscription_symbols([item.symbol for item in items], portfolio)
+            self._build_market_data_refresh_request([item.symbol for item in items], portfolio)
         )
 
     def run_market_scan(self) -> None:
@@ -87,8 +89,8 @@ class SchedulerService:
             return
 
         portfolio = self.portfolio_service.snapshot()
-        refresh_symbols = self._build_quote_subscription_symbols(self.universe_builder.symbols, portfolio)
-        self._refresh_market_data(refresh_symbols)
+        refresh_request = self._build_market_data_refresh_request(self.universe_builder.symbols, portfolio)
+        self._refresh_market_data(refresh_request)
         for position in portfolio.open_positions:
             snapshot = self._build_position_exit_snapshot(position)
             if snapshot is None:
@@ -161,29 +163,38 @@ class SchedulerService:
             self._last_market_scan_at = now
 
     @staticmethod
-    def _build_quote_subscription_symbols(symbols: list[str], portfolio: object | None) -> list[str]:
-        selected: list[str] = []
-        seen: set[str] = set()
+    def _build_market_data_refresh_request(symbols: list[str], portfolio: object | None) -> dict[str, object]:
+        priority_symbols: list[str] = []
+        priority_seen: set[str] = set()
+        if portfolio is not None:
+            for position in getattr(portfolio, 'open_positions', []):
+                symbol = getattr(position, 'symbol', '')
+                if not symbol or symbol in priority_seen:
+                    continue
+                priority_seen.add(symbol)
+                priority_symbols.append(symbol)
+        scan_symbols: list[str] = []
+        scan_seen: set[str] = set(priority_seen)
         for symbol in symbols:
-            if not symbol or symbol in seen:
+            if not symbol or symbol in scan_seen:
                 continue
-            seen.add(symbol)
-            selected.append(symbol)
-        if portfolio is None:
-            return selected
-        for position in getattr(portfolio, 'open_positions', []):
-            symbol = getattr(position, 'symbol', '')
-            if not symbol or symbol in seen:
-                continue
-            seen.add(symbol)
-            selected.append(symbol)
-        return selected
+            scan_seen.add(symbol)
+            scan_symbols.append(symbol)
+        requested_symbols = priority_symbols + scan_symbols
+        return {
+            'priority_symbols': priority_symbols,
+            'scan_symbols': scan_symbols,
+            'requested_symbols': requested_symbols,
+            'universe_refresh_interval_seconds': None,
+        }
 
-    def _refresh_market_data(self, symbols: list[str]) -> None:
+    def _refresh_market_data(self, request: dict[str, object]) -> None:
         if self.market_data_refresher is None:
             return
+        payload = dict(request)
+        payload['universe_refresh_interval_seconds'] = self.universe_refresh_interval_seconds
         try:
-            self.market_data_refresher(symbols)
+            result = self.market_data_refresher(payload)
         except Exception as exc:
             self._record_system_event(
                 event_type='market_data_refresh_failed',
@@ -192,6 +203,8 @@ class SchedulerService:
                 message='Failed to refresh market data from REST.',
                 payload={'error': str(exc)},
             )
+            return
+        self._record_market_data_refresh_summary(payload, result if isinstance(result, dict) else None)
 
     def _refresh_universe_master(self) -> None:
         if self.universe_master_refresher is None:
@@ -343,6 +356,27 @@ class SchedulerService:
                 'price': getattr(signal, 'price', None),
             },
         )
+
+    def _record_market_data_refresh_summary(self, request: dict[str, object], refresh_result: dict[str, object] | None = None) -> None:
+        if self.system_events_repository is None:
+            return
+        try:
+            requested_symbols = list(request.get('requested_symbols') or [])
+            summary = self.market_data_collector.build_refresh_summary(
+                requested_symbols,
+                stale_after_seconds=self.market_data_stale_after_seconds,
+            )
+            if refresh_result:
+                summary.update(refresh_result)
+            self.system_events_repository.create(
+                event_type='market_data_refresh_summary',
+                severity='INFO',
+                component='scheduler',
+                message='Recorded latest market data refresh summary.',
+                payload=summary,
+            )
+        except Exception:
+            return
 
     def _record_market_scan_summary(
         self,
