@@ -122,6 +122,21 @@ class DashboardSummaryTest(unittest.TestCase):
             )
             connection.execute(
                 """
+                INSERT INTO system_events (
+                    event_type, severity, component, message, payload_json, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "market_data_refresh_degraded",
+                    "WARN",
+                    "scheduler",
+                    "REST refresh failed=2 / stale=1 / failed_symbols=000660 / stale_symbols=000660",
+                    '{"failed_symbols": ["000660"], "stale_symbols": ["000660"]}',
+                    "2026-03-13T00:20:06+00:00",
+                ),
+            )
+            connection.execute(
+                """
                 INSERT INTO strategy_snapshots (
                     symbol, snapshot_time, score_total, volume_score, momentum_score, ma_score,
                     atr_score, rsi_score, price, ma5, ma20, rsi, atr, metadata_json, created_at
@@ -198,6 +213,8 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertIn("skipped_count=30", rendered)
         self.assertIn("failed_count=2", rendered)
         self.assertIn("stale_symbol_count=1", rendered)
+        self.assertIn("[recent_market_data_failures]", rendered)
+        self.assertIn("market_data_refresh_degraded", rendered)
         self.assertIn("[tracked_positions]", rendered)
         self.assertIn("status=OPEN", rendered)
         self.assertIn("[today_targets]", rendered)

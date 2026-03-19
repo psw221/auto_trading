@@ -135,10 +135,10 @@ REST 전환 이후 운영자가 상태를 더 쉽게 확인하고 대응할 수 
 
 세부 TODO:
 
-- [ ] 대시보드에 market-data refresh 상태 섹션 추가
-- [ ] 최근 refresh 실패 이벤트를 요약해서 표시
-- [ ] 필요 시 Telegram 시스템 알림에 refresh 장애 포함 검토
-- [ ] REST 전환 이후 운영 점검 체크리스트 문서화
+- [x] 대시보드에 market-data refresh 상태 섹션 추가
+- [x] 최근 refresh 실패 이벤트를 요약해서 표시
+- [x] 필요 시 Telegram 시스템 알림에 refresh 장애 포함 검토
+- [x] REST 전환 이후 운영 점검 체크리스트 문서화
 
 완료 기준:
 

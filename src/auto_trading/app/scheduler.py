@@ -43,6 +43,8 @@ class SchedulerService:
     _last_post_market_run_date: str | None = field(init=False, default=None)
     _last_market_scan_at: datetime | None = field(init=False, default=None)
     _last_target_scores_signature: tuple[tuple[str, int, float], ...] = field(init=False, default_factory=tuple)
+    _last_market_data_alert_signature: tuple[tuple[str, ...], tuple[str, ...]] = field(init=False, default_factory=tuple)
+    _last_market_data_alert_at: datetime | None = field(init=False, default=None)
 
     def run_forever(self) -> None:
         while True:
@@ -402,6 +404,56 @@ class SchedulerService:
                 message='Recorded latest market data refresh summary.',
                 payload=summary,
             )
+            self._maybe_alert_market_data_degraded(summary)
+        except Exception:
+            return
+
+    def _maybe_alert_market_data_degraded(self, summary: dict[str, object]) -> None:
+        if self.notifier is None:
+            return
+        failed_symbols = tuple(str(item) for item in (summary.get('failed_symbols') or []) if str(item))
+        stale_symbols = tuple(str(item) for item in (summary.get('stale_symbols') or []) if str(item))
+        if not failed_symbols and not stale_symbols:
+            self._last_market_data_alert_signature = tuple()
+            self._last_market_data_alert_at = None
+            return
+        signature = (failed_symbols, stale_symbols)
+        now = datetime.now()
+        if (
+            self._last_market_data_alert_at is not None
+            and self._last_market_data_alert_signature == signature
+            and (now - self._last_market_data_alert_at).total_seconds() < 300
+        ):
+            return
+        failed_count = int(summary.get('failed_count') or 0)
+        stale_count = int(summary.get('stale_symbol_count') or 0)
+        parts: list[str] = []
+        if failed_count:
+            parts.append(f'REST refresh failed={failed_count}')
+        if stale_count:
+            parts.append(f'stale={stale_count}')
+        if failed_symbols:
+            parts.append('failed_symbols=' + ','.join(failed_symbols))
+        if stale_symbols:
+            parts.append('stale_symbols=' + ','.join(stale_symbols))
+        message = ' / '.join(parts) or 'REST market-data refresh degraded.'
+        self._record_system_event(
+            event_type='market_data_refresh_degraded',
+            severity='WARN',
+            component='scheduler',
+            message=message,
+            payload=summary,
+        )
+        try:
+            self.notifier.send_system_event(
+                {
+                    'severity': 'WARN',
+                    'component': 'market_data',
+                    'message': message,
+                }
+            )
+            self._last_market_data_alert_signature = signature
+            self._last_market_data_alert_at = now
         except Exception:
             return
 

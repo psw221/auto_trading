@@ -154,12 +154,16 @@ class _StubFailSafeMonitor:
 class _StubNotifier:
     payloads: list[dict[str, object]] = field(default_factory=list)
     daily_reports: list[dict[str, object]] = field(default_factory=list)
+    system_events: list[dict[str, object]] = field(default_factory=list)
 
     def send_target_scores(self, payload: dict[str, object]) -> None:
         self.payloads.append(payload)
 
     def send_daily_report(self, payload: dict[str, object]) -> None:
         self.daily_reports.append(payload)
+
+    def send_system_event(self, payload: dict[str, object]) -> None:
+        self.system_events.append(payload)
 
 
 @dataclass(slots=True)
@@ -563,6 +567,50 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual([], refreshed[0]['priority_symbols'])
         self.assertEqual(['000000', '000001'], refreshed[0]['requested_symbols'])
 
+
+    def test_run_market_scan_sends_market_data_degraded_alert(self) -> None:
+        scores = self._build_scores()
+        notifier = _StubNotifier()
+        system_events_repository = _StubSystemEventsRepository()
+        collector = _StubCollector(
+            scores=scores,
+            refresh_summary={
+                'snapshot_time': '2026-03-19T06:14:49+00:00',
+                'requested_count': 3,
+                'attempted_count': 3,
+                'refreshed_count': 2,
+                'skipped_count': 0,
+                'priority_count': 1,
+                'failed_count': 1,
+                'stale_symbol_count': 1,
+                'latest_refresh_at': '2026-03-19T06:14:48+00:00',
+                'failed_symbols': ['088350'],
+                'stale_symbols': ['088350'],
+            },
+        )
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
+            market_data_collector=collector,
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+            system_events_repository=system_events_repository,
+            market_data_refresher=lambda request: {'attempted_count': 3, 'skipped_count': 0, 'priority_count': 1},
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(1, len(notifier.system_events))
+        self.assertIn('REST refresh failed=1', notifier.system_events[0]['message'])
+        degraded_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'market_data_refresh_degraded'
+        ]
+        self.assertEqual(1, len(degraded_events))
 
     def test_run_market_scan_records_market_data_refresh_summary(self) -> None:
         scores = self._build_scores()
