@@ -29,7 +29,7 @@ class MarketDataCollector:
             turnover=turnover,
         )
         self.cache.append_bar(bar)
-        snapshot = MarketSnapshot(symbol=event.symbol, price=price, volume=volume, turnover=turnover)
+        snapshot = MarketSnapshot(symbol=event.symbol, price=price, volume=volume, turnover=turnover, source='WS', refreshed_at=utc_now().isoformat())
         self.cache.set(snapshot)
         self.cache.mark_refresh_success(event.symbol, source='WS')
 
@@ -49,9 +49,12 @@ class MarketDataCollector:
         *,
         refreshed_at: datetime | None = None,
     ) -> None:
+        refreshed = refreshed_at or utc_now()
+        snapshot.source = 'REST'
+        snapshot.refreshed_at = refreshed.isoformat()
         self.cache.set(snapshot)
         self.replace_bars(symbol, bars)
-        self.cache.mark_refresh_success(symbol, source='REST', occurred_at=refreshed_at)
+        self.cache.mark_refresh_success(symbol, source='REST', occurred_at=refreshed)
 
     def record_refresh_failure(self, symbol: str, error: str, *, occurred_at: datetime | None = None) -> None:
         if not symbol:

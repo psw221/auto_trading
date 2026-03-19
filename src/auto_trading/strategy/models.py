@@ -26,6 +26,10 @@ class MarketSnapshot:
     atr: float = 0.0
     momentum_20: float = 0.0
     volume_ratio: float = 0.0
+    source: str = ''
+    refreshed_at: str = ''
+    indicators_ready: bool = False
+    is_stale: bool = False
 
 
 @dataclass(slots=True)

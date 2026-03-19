@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from time import sleep
 
 from auto_trading.common.trading_calendar import TradingCalendar
@@ -289,6 +289,8 @@ class SchedulerService:
     def _build_position_exit_snapshot(self, position: object) -> MarketSnapshot | None:
         latest_snapshot = self.market_data_collector.get_latest_snapshot(position.symbol)
         bars = self.market_data_collector.get_recent_bars(position.symbol, 30)
+        refresh_status = self.market_data_collector.cache.get_refresh_status(position.symbol)
+        is_stale = self._is_market_data_stale(refresh_status.last_success_at if refresh_status is not None else '')
 
         if len(bars) >= 20:
             score = self.strategy_scorer.score(bars)
@@ -301,6 +303,10 @@ class SchedulerService:
                 atr=score.atr,
                 momentum_20=score.momentum_20,
                 volume_ratio=score.volume_ratio,
+                source='REST',
+                refreshed_at=refresh_status.last_success_at if refresh_status is not None else '',
+                indicators_ready=True,
+                is_stale=is_stale,
             )
 
         if latest_snapshot is not None and latest_snapshot.price > 0:
@@ -309,12 +315,33 @@ class SchedulerService:
                 price=latest_snapshot.price,
                 volume=latest_snapshot.volume,
                 turnover=latest_snapshot.turnover,
+                source=getattr(latest_snapshot, 'source', '') or (refresh_status.source if refresh_status is not None else ''),
+                refreshed_at=getattr(latest_snapshot, 'refreshed_at', '') or (refresh_status.last_success_at if refresh_status is not None else ''),
+                indicators_ready=False,
+                is_stale=is_stale,
             )
 
         current_price = float(getattr(position, 'current_price', 0.0) or 0.0)
         if current_price > 0:
-            return MarketSnapshot(symbol=position.symbol, price=current_price)
+            return MarketSnapshot(
+                symbol=position.symbol,
+                price=current_price,
+                source='POSITION',
+                indicators_ready=False,
+                is_stale=True,
+            )
         return None
+
+    def _is_market_data_stale(self, refreshed_at: str) -> bool:
+        if not refreshed_at:
+            return True
+        try:
+            refreshed_dt = datetime.fromisoformat(refreshed_at)
+        except ValueError:
+            return True
+        if refreshed_dt.tzinfo is None:
+            refreshed_dt = refreshed_dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - refreshed_dt).total_seconds() > self.market_data_stale_after_seconds
 
     def _send_daily_report(self) -> None:
         if self.notifier is None or self.daily_report_builder is None:

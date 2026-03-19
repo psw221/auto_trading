@@ -39,9 +39,8 @@ class RuntimeService:
                 self.fail_safe_monitor.record_heartbeat("kis_ws")
             for event in events:
                 if event.event_type == "quote":
-                    self.market_data_collector.update_quote(event)
-                else:
-                    self.order_engine.handle_broker_event(event)
+                    continue
+                self.order_engine.handle_broker_event(event)
         except Exception:
             self.fail_safe_monitor.on_stream_disconnect("kis_ws")
             self.kis_ws_client.disconnect()
@@ -52,8 +51,6 @@ class RuntimeService:
         try:
             self.kis_ws_client.connect()
             self.kis_ws_client.subscribe_order_events()
-            if self.kis_ws_client.subscribed_symbols:
-                self.kis_ws_client.subscribe_quotes(self.kis_ws_client.subscribed_symbols)
             self.fail_safe_monitor.on_stream_recovered("kis_ws")
         except Exception:
             self.fail_safe_monitor.on_stream_disconnect("kis_ws")

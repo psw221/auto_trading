@@ -15,16 +15,17 @@ class SignalEngine:
         return [EntrySignal(symbol=item.symbol, score_total=item.score_total, price=item.price) for item in qualified]
 
     def evaluate_exit(self, position: Position, snapshot: MarketSnapshot) -> ExitSignal | None:
-        if position.avg_entry_price > 0 and snapshot.price <= position.avg_entry_price * 0.985:
+        has_fresh_price = snapshot.price > 0 and not snapshot.is_stale
+        if has_fresh_price and position.avg_entry_price > 0 and snapshot.price <= position.avg_entry_price * 0.985:
             return ExitSignal(symbol=position.symbol, reason="stop_loss", order_type="MARKET")
-        if position.avg_entry_price > 0 and snapshot.price >= position.avg_entry_price * 1.04:
+        if has_fresh_price and position.avg_entry_price > 0 and snapshot.price >= position.avg_entry_price * 1.04:
             return ExitSignal(
                 symbol=position.symbol,
                 reason="take_profit",
                 order_type="LIMIT",
                 price=snapshot.price,
             )
-        if snapshot.ma5 > 0 and snapshot.price < snapshot.ma5:
+        if has_fresh_price and snapshot.indicators_ready and snapshot.ma5 > 0 and snapshot.price < snapshot.ma5:
             return ExitSignal(symbol=position.symbol, reason="ma5_breakdown", order_type="MARKET")
         if self._holding_days(position) > 5:
             return ExitSignal(symbol=position.symbol, reason="time_exit", order_type="MARKET")

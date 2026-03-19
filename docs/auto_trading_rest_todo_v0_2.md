@@ -87,13 +87,17 @@ REST 2차에서는 다음 3가지를 우선 달성한다.
 
 REST snapshot 기반 exit가 안정적으로 동작하면서도, 지표 기반 exit의 품질을 유지한다.
 
+참조 문서:
+
+- `docs/auto_trading_exit_data_quality_spec_v0_1.md`
+
 세부 TODO:
 
-- [ ] `take_profit` / `stop_loss` 판단 시 snapshot staleness 확인
-- [ ] `ma5_breakdown` 같은 지표형 exit는 필요한 bars 품질 조건 명시
-- [ ] bars 부족 시 허용되는 exit / 불허되는 exit 규칙 문서화
-- [ ] 보유 종목 exit 판단 테스트 보강
-- [ ] stale snapshot 상태에서의 보호 로직 추가
+- [x] `take_profit` / `stop_loss` 판단 시 snapshot staleness 확인
+- [x] `ma5_breakdown` 같은 지표형 exit는 필요한 bars 품질 조건 명시
+- [x] bars 부족 시 허용되는 exit / 불허되는 exit 규칙 문서화
+- [x] 보유 종목 exit 판단 테스트 보강
+- [x] stale snapshot 상태에서의 보호 로직 추가
 
 완료 기준:
 
@@ -106,13 +110,17 @@ REST snapshot 기반 exit가 안정적으로 동작하면서도, 지표 기반 e
 
 quote WebSocket이 더 이상 전략 판단 핵심 경로가 아님을 코드 구조상 명확히 한다.
 
+참조 문서:
+
+- `docs/auto_trading_ws_responsibility_spec_v0_1.md`
+
 세부 TODO:
 
-- [ ] quote WS 관련 사용 경로 재점검
-- [ ] 더 이상 필요 없는 scheduler 연계 코드 제거
-- [ ] order notice WS 전용 책임을 문서화
-- [ ] quote WS 보조/호환 용도 범위 정리
-- [ ] 관련 회귀 테스트 정리
+- [x] quote WS 관련 사용 경로 재점검
+- [x] 더 이상 필요 없는 scheduler 연계 코드 제거
+- [x] order notice WS 전용 책임을 문서화
+- [x] quote WS 보조/호환 용도 범위 정리
+- [x] 관련 회귀 테스트 정리
 
 완료 기준:
 

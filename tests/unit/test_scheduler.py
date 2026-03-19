@@ -7,6 +7,7 @@ from pathlib import Path
 from auto_trading.app.scheduler import SchedulerService
 from auto_trading.common.trading_calendar import TradingCalendar
 from auto_trading.strategy.models import Bar, MarketSnapshot, StrategyScore
+from auto_trading.strategy.signals import SignalEngine
 from auto_trading.universe.builder import UniverseItem
 
 
@@ -35,6 +36,7 @@ class _StubCollector:
     scores: dict[str, StrategyScore]
     latest_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
     short_bar_symbols: set[str] = field(default_factory=set)
+    refresh_statuses: dict[str, object] = field(default_factory=dict)
     refresh_summary: dict[str, object] = field(default_factory=lambda: {
         'snapshot_time': '2026-03-19T06:00:00+00:00',
         'requested_count': 0,
@@ -59,6 +61,17 @@ class _StubCollector:
         if summary.get('requested_count') == 0:
             summary['requested_count'] = len(symbols)
         return summary
+
+
+    @property
+    def cache(self):
+        outer = self
+
+        class _CacheView:
+            def get_refresh_status(self, symbol: str):
+                return outer.refresh_statuses.get(symbol)
+
+        return _CacheView()
 
     def get_latest_snapshot(self, symbol: str) -> MarketSnapshot | None:
         return self.latest_snapshots.get(symbol)
@@ -414,15 +427,45 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(1, len(notifier.daily_reports))
 
 
-    def test_run_market_scan_exits_open_position_from_latest_snapshot_without_20_bars(self) -> None:
+    def test_run_market_scan_blocks_price_exit_when_snapshot_is_stale(self) -> None:
         scores = self._build_scores()
+        stale_status = type('RefreshStatus', (), {'last_success_at': '2026-03-19T00:00:00+00:00', 'source': 'REST'})()
         collector = _StubCollector(
             scores=scores,
-            latest_snapshots={'088350': MarketSnapshot(symbol='088350', price=5210.0)},
+            latest_snapshots={'088350': MarketSnapshot(symbol='088350', price=5210.0, source='REST', refreshed_at='2026-03-19T00:00:00+00:00')},
             short_bar_symbols={'088350'},
+            refresh_statuses={'088350': stale_status},
         )
-        signal = type('ExitSignal', (), {'symbol': '088350', 'reason': 'take_profit', 'order_type': 'LIMIT', 'price': 5210.0})()
-        signal_engine = _StubSignalEngine(exit_signals={'088350': signal})
+        signal_engine = SignalEngine()
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=collector,
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 4735.0, 'current_price': 5210.0, 'opened_at': '2026-03-18T09:00:00+09:00'})()]
+            ),
+            risk_engine=_StubRiskEngine(exit_allowed=True),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            market_data_stale_after_seconds=120,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(0, len(order_engine.exits))
+
+    def test_run_market_scan_exits_open_position_from_latest_snapshot_without_20_bars(self) -> None:
+        scores = self._build_scores()
+        fresh_status = type('RefreshStatus', (), {'last_success_at': '2999-03-19T06:00:00+00:00', 'source': 'REST'})()
+        collector = _StubCollector(
+            scores=scores,
+            latest_snapshots={'088350': MarketSnapshot(symbol='088350', price=5210.0, source='REST', refreshed_at='2999-03-19T06:00:00+00:00')},
+            short_bar_symbols={'088350'},
+            refresh_statuses={'088350': fresh_status},
+        )
+        signal_engine = SignalEngine()
         order_engine = _StubOrderEngine()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
