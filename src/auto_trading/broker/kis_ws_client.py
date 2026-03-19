@@ -127,11 +127,16 @@ class KISWebSocketClient:
             seen.add(symbol)
             normalized.append(symbol)
         self.subscribed_symbols = normalized
-        for symbol in normalized:
-            if symbol in self._active_quote_subscriptions:
-                continue
-            self._send_subscription(self._quote_tr_id(), symbol)
-            self._active_quote_subscriptions.add(symbol)
+        if websocket is None:
+            return None
+        try:
+            self._ensure_subscription_connection()
+            self._subscribe_quotes_without_reconnect(normalized)
+        except Exception as exc:
+            if not self._should_reconnect_for_subscription_error(exc):
+                raise
+            self._force_reconnect()
+            self._subscribe_quotes_without_reconnect(normalized)
 
     def subscribe_order_events(self) -> None:
         self._send_subscription(self._order_event_tr_id(), self.settings.kis_user_id or "ORDER")
@@ -180,6 +185,28 @@ class KISWebSocketClient:
             },
         }
         self._socket.send(json.dumps(payload))
+
+    def _ensure_subscription_connection(self) -> None:
+        if self._socket is not None:
+            return
+        self._force_reconnect()
+
+    def _force_reconnect(self) -> None:
+        self.disconnect()
+        self.connect()
+        self.subscribe_order_events()
+
+    def _subscribe_quotes_without_reconnect(self, symbols: list[str]) -> None:
+        for symbol in symbols:
+            if symbol in self._active_quote_subscriptions:
+                continue
+            self._send_subscription(self._quote_tr_id(), symbol)
+            self._active_quote_subscriptions.add(symbol)
+
+    @staticmethod
+    def _should_reconnect_for_subscription_error(exc: Exception) -> bool:
+        message = str(exc).strip().lower()
+        return 'socket is already closed' in message or 'connection aborted' in message or 'winerror 10053' in message
 
     def _drain_socket(self) -> None:
         if self._socket is None or websocket is None:

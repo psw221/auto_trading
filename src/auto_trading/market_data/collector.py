@@ -30,6 +30,18 @@ class MarketDataCollector:
         snapshot = MarketSnapshot(symbol=event.symbol, price=price, volume=volume, turnover=turnover)
         self.cache.set(snapshot)
 
+    def replace_bars(self, symbol: str, bars: list[Bar]) -> None:
+        if not symbol:
+            return
+        container = self.cache.bars[symbol]
+        container.clear()
+        for bar in bars:
+            container.append(bar)
+
+    def set_rest_market_data(self, symbol: str, snapshot: MarketSnapshot, bars: list[Bar]) -> None:
+        self.cache.set(snapshot)
+        self.replace_bars(symbol, bars)
+
     def get_latest_snapshot(self, symbol: str) -> MarketSnapshot | None:
         return self.cache.get(symbol)
 

@@ -52,6 +52,31 @@ class KISClientTest(unittest.TestCase):
         self.assertTrue(response.accepted)
         self.assertEqual("12345", response.order_no)
 
+    def test_get_daily_bars_parses_ohlcv_output2(self) -> None:
+        client = StubKISClient(
+            build_settings(),
+            [{
+                'output2': [
+                    {
+                        'stck_oprc': '70000',
+                        'stck_hgpr': '71000',
+                        'stck_lwpr': '69000',
+                        'stck_clpr': '70500',
+                        'acml_vol': '123456',
+                        'acml_tr_pbmn': '10000000000',
+                    }
+                ]
+            }],
+        )
+        bars = client.get_daily_bars('005930', lookback_days=1)
+        self.assertEqual(1, len(bars))
+        self.assertEqual(70000.0, bars[0]['open'])
+        self.assertEqual(71000.0, bars[0]['high'])
+        self.assertEqual(69000.0, bars[0]['low'])
+        self.assertEqual(70500.0, bars[0]['close'])
+        self.assertEqual(123456.0, bars[0]['volume'])
+        self.assertEqual(10000000000.0, bars[0]['turnover'])
+
     def test_get_balance_parses_output2(self) -> None:
         client = StubKISClient(
             build_settings(),
@@ -88,3 +113,4 @@ class KISClientTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

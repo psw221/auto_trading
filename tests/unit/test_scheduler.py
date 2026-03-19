@@ -201,7 +201,7 @@ class SchedulerTargetsTest(unittest.TestCase):
     def test_run_market_scan_loads_current_universe_before_rebuild(self) -> None:
         scores = self._build_scores()
         notifier = _StubNotifier()
-        subscribed: list[list[str]] = []
+        refreshed: list[list[str]] = []
         current_items = [UniverseItem(symbol=f'{i:06d}', name=f'Name {i:06d}') for i in range(12)]
         universe_builder = _StubUniverseBuilder(symbols=[], current_items=current_items)
         scheduler = SchedulerService(
@@ -216,18 +216,18 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             notifier=notifier,
-            quote_subscription_updater=subscribed.append,
+            market_data_refresher=refreshed.append,
         )
         scheduler.run_market_scan()
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual(0, universe_builder.rebuild_count)
-        self.assertEqual(2, len(subscribed))
-        self.assertEqual(12, len(subscribed[-1]))
+        self.assertEqual(1, len(refreshed))
+        self.assertEqual(12, len(refreshed[-1]))
         self.assertEqual(1, len(notifier.payloads))
 
-    def test_run_market_scan_subscribes_union_of_universe_and_open_positions(self) -> None:
+    def test_run_market_scan_refreshes_rest_data_for_union_of_universe_and_open_positions(self) -> None:
         scores = self._build_scores()
-        subscribed: list[list[str]] = []
+        refreshed: list[list[str]] = []
         universe_builder = _StubUniverseBuilder(symbols=['000000', '000001'])
         portfolio_service = _StubPortfolioService(
             open_positions=[type('Position', (), {'symbol': '088350'})()]
@@ -243,15 +243,15 @@ class SchedulerTargetsTest(unittest.TestCase):
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
-            quote_subscription_updater=subscribed.append,
+            market_data_refresher=refreshed.append,
         )
         scheduler.run_market_scan()
-        self.assertEqual(1, len(subscribed))
-        self.assertEqual(['000000', '000001', '088350'], subscribed[0])
+        self.assertEqual(1, len(refreshed))
+        self.assertEqual(['000000', '000001', '088350'], refreshed[0])
 
-    def test_run_pre_market_subscribes_union_of_universe_and_open_positions(self) -> None:
+    def test_run_pre_market_refreshes_rest_data_for_union_of_universe_and_open_positions(self) -> None:
         scores = self._build_scores()
-        subscribed: list[list[str]] = []
+        refreshed: list[list[str]] = []
         current_items = [UniverseItem(symbol='000000', name='Name 000000')]
         universe_builder = _StubUniverseBuilder(symbols=['000000'], current_items=current_items)
         portfolio_service = _StubPortfolioService(
@@ -268,16 +268,16 @@ class SchedulerTargetsTest(unittest.TestCase):
             recovery_service=_StubRecoveryService(),
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
-            quote_subscription_updater=subscribed.append,
+            market_data_refresher=refreshed.append,
         )
         scheduler.run_pre_market()
-        self.assertEqual(1, len(subscribed))
-        self.assertEqual(['000000', '088350'], subscribed[0])
+        self.assertEqual(1, len(refreshed))
+        self.assertEqual(['000000', '088350'], refreshed[0])
 
     def test_run_market_scan_rebuilds_when_current_universe_missing(self) -> None:
         scores = self._build_scores()
         notifier = _StubNotifier()
-        subscribed: list[list[str]] = []
+        refreshed: list[list[str]] = []
         universe_builder = _StubUniverseBuilder(symbols=[])
         scheduler = SchedulerService(
             universe_builder=universe_builder,
@@ -291,13 +291,13 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             notifier=notifier,
-            quote_subscription_updater=subscribed.append,
+            market_data_refresher=refreshed.append,
         )
         scheduler.run_market_scan()
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual(1, universe_builder.rebuild_count)
-        self.assertEqual(2, len(subscribed))
-        self.assertEqual(12, len(subscribed[-1]))
+        self.assertEqual(1, len(refreshed))
+        self.assertEqual(12, len(refreshed[-1]))
         self.assertEqual(1, len(notifier.payloads))
 
     def test_run_market_scan_records_universe_restore_failure(self) -> None:
@@ -340,7 +340,7 @@ class SchedulerTargetsTest(unittest.TestCase):
                 self.symbols = []
                 return []
 
-        subscribed: list[list[str]] = []
+        refreshed: list[list[str]] = []
         system_events_repository = _StubSystemEventsRepository()
         universe_builder = _EmptyRebuildUniverseBuilder(symbols=[], current_items=current_items)
         scheduler = SchedulerService(
@@ -355,14 +355,14 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             system_events_repository=system_events_repository,
-            quote_subscription_updater=subscribed.append,
+            market_data_refresher=refreshed.append,
         )
         scheduler.run_pre_market()
         self.assertEqual(1, universe_builder.rebuild_count)
         self.assertEqual(1, universe_builder.load_current_count)
         self.assertEqual([item.symbol for item in current_items], universe_builder.symbols)
-        self.assertEqual(1, len(subscribed))
-        self.assertEqual([item.symbol for item in current_items], subscribed[0])
+        self.assertEqual(1, len(refreshed))
+        self.assertEqual([item.symbol for item in current_items], refreshed[0])
         warning_events = [
             event for event in system_events_repository.events
             if event['event_type'] == 'market_universe_rebuild_empty'
@@ -448,11 +448,30 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual('max_positions', skipped_events[0]['payload']['reason'])
         self.assertEqual(0, len(order_engine.entries))
 
-    def test_run_market_scan_records_quote_subscription_failure_without_crashing(self) -> None:
+    def test_run_market_scan_uses_rest_market_data_refresher(self) -> None:
+        scores = self._build_scores()
+        refreshed: list[list[str]] = []
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            market_data_refresher=refreshed.append,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual([['000000', '000001']], refreshed)
+
+    def test_run_market_scan_records_market_data_refresh_failure_without_crashing(self) -> None:
         scores = self._build_scores()
         system_events_repository = _StubSystemEventsRepository()
 
-        def _failing_subscribe(symbols: list[str]) -> None:
+        def _failing_refresh(symbols: list[str]) -> None:
             raise ConnectionAbortedError('socket is already closed')
 
         scheduler = SchedulerService(
@@ -467,12 +486,12 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             system_events_repository=system_events_repository,
-            quote_subscription_updater=_failing_subscribe,
+            market_data_refresher=_failing_refresh,
         )
         scheduler.run_market_scan()
         failure_events = [
             event for event in system_events_repository.events
-            if event['event_type'] == 'quote_subscription_update_failed'
+            if event['event_type'] == 'market_data_refresh_failed'
         ]
         self.assertEqual(1, len(failure_events))
         self.assertIn('socket is already closed', failure_events[0]['payload']['error'])

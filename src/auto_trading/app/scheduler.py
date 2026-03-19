@@ -31,10 +31,10 @@ class SchedulerService:
     notifier: object | None = None
     system_events_repository: object | None = None
     strategy_snapshots_repository: object | None = None
-    quote_subscription_updater: object | None = None
     universe_master_refresher: object | None = None
     holiday_calendar_refresher: object | None = None
     daily_report_builder: object | None = None
+    market_data_refresher: object | None = None
     market_scan_interval_seconds: float = 30.0
     loop_sleep_seconds: float = 1.0
     _last_pre_market_run_date: str | None = field(init=False, default=None)
@@ -66,7 +66,7 @@ class SchedulerService:
         self.recovery_service.recover()
         items = self._rebuild_or_restore_market_universe()
         portfolio = self.portfolio_service.snapshot()
-        self._update_quote_subscriptions(
+        self._refresh_market_data(
             self._build_quote_subscription_symbols([item.symbol for item in items], portfolio)
         )
 
@@ -87,9 +87,8 @@ class SchedulerService:
             return
 
         portfolio = self.portfolio_service.snapshot()
-        self._update_quote_subscriptions(
-            self._build_quote_subscription_symbols(self.universe_builder.symbols, portfolio)
-        )
+        refresh_symbols = self._build_quote_subscription_symbols(self.universe_builder.symbols, portfolio)
+        self._refresh_market_data(refresh_symbols)
         for position in portfolio.open_positions:
             snapshot = self._build_position_exit_snapshot(position)
             if snapshot is None:
@@ -161,20 +160,6 @@ class SchedulerService:
             self.run_market_scan()
             self._last_market_scan_at = now
 
-    def _update_quote_subscriptions(self, symbols: list[str]) -> None:
-        if self.quote_subscription_updater is None:
-            return
-        try:
-            self.quote_subscription_updater(symbols)
-        except Exception as exc:
-            self._record_system_event(
-                event_type="quote_subscription_update_failed",
-                severity="ERROR",
-                component="scheduler",
-                message="Failed to update quote subscriptions.",
-                payload={"error": str(exc)},
-            )
-
     @staticmethod
     def _build_quote_subscription_symbols(symbols: list[str], portfolio: object | None) -> list[str]:
         selected: list[str] = []
@@ -193,6 +178,20 @@ class SchedulerService:
             seen.add(symbol)
             selected.append(symbol)
         return selected
+
+    def _refresh_market_data(self, symbols: list[str]) -> None:
+        if self.market_data_refresher is None:
+            return
+        try:
+            self.market_data_refresher(symbols)
+        except Exception as exc:
+            self._record_system_event(
+                event_type='market_data_refresh_failed',
+                severity='ERROR',
+                component='scheduler',
+                message='Failed to refresh market data from REST.',
+                payload={'error': str(exc)},
+            )
 
     def _refresh_universe_master(self) -> None:
         if self.universe_master_refresher is None:
@@ -273,10 +272,6 @@ class SchedulerService:
                 payload={"error": str(exc)},
             )
             return
-        portfolio = self.portfolio_service.snapshot()
-        self._update_quote_subscriptions(
-            self._build_quote_subscription_symbols([item.symbol for item in items], portfolio)
-        )
 
     def _build_position_exit_snapshot(self, position: object) -> MarketSnapshot | None:
         latest_snapshot = self.market_data_collector.get_latest_snapshot(position.symbol)

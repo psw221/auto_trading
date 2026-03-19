@@ -29,6 +29,7 @@ from auto_trading.storage.repositories.strategy_snapshots import StrategySnapsho
 from auto_trading.storage.repositories.trade_logs import TradeLogsRepository
 from auto_trading.strategy.scorer import StrategyScorer
 from auto_trading.strategy.signals import SignalEngine
+from auto_trading.strategy.models import Bar, MarketSnapshot
 from auto_trading.universe.builder import UniverseBuilder
 from auto_trading.universe.master_generator import generate_master_csv
 
@@ -114,7 +115,7 @@ def bootstrap() -> ApplicationContainer:
         notifier=notifier,
         system_events_repository=system_events_repository,
         strategy_snapshots_repository=strategy_snapshots_repository,
-        quote_subscription_updater=kis_ws_client.subscribe_quotes,
+        market_data_refresher=lambda symbols: _refresh_market_data_from_rest(symbols, kis_client, market_data_collector),
         universe_master_refresher=lambda: generate_master_csv(output=settings.universe_master_path),
         holiday_calendar_refresher=lambda: _refresh_holiday_calendar(settings),
         daily_report_builder=lambda: {
@@ -161,3 +162,42 @@ def _refresh_holiday_calendar(settings: Settings) -> None:
         year=current_year,
         service_key=settings.holiday_api_service_key,
     )
+
+
+def _refresh_market_data_from_rest(symbols: list[str], kis_client: KISClient, market_data_collector: MarketDataCollector) -> None:
+    seen: set[str] = set()
+    for symbol in symbols:
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        current = kis_client.get_current_price(symbol)
+        history = kis_client.get_daily_bars(symbol, lookback_days=30)
+        bars = [
+            Bar(
+                symbol=symbol,
+                open=float(item.get('open') or 0.0),
+                high=float(item.get('high') or 0.0),
+                low=float(item.get('low') or 0.0),
+                close=float(item.get('close') or 0.0),
+                volume=float(item.get('volume') or 0.0),
+                turnover=float(item.get('turnover') or 0.0),
+            )
+            for item in reversed(history)
+            if float(item.get('close') or 0.0) > 0
+        ]
+        latest_price = float(current.get('price') or 0.0)
+        if bars and latest_price > 0:
+            latest_bar = bars[-1]
+            latest_bar.close = latest_price
+            latest_bar.high = max(latest_bar.high, latest_price) if latest_bar.high else latest_price
+            if latest_bar.low > 0:
+                latest_bar.low = min(latest_bar.low, latest_price)
+            else:
+                latest_bar.low = latest_price
+            latest_bar.turnover = float(current.get('turnover') or latest_bar.turnover)
+        snapshot = MarketSnapshot(
+            symbol=symbol,
+            price=latest_price if latest_price > 0 else (bars[-1].close if bars else 0.0),
+            turnover=float(current.get('turnover') or 0.0),
+        )
+        market_data_collector.set_rest_market_data(symbol, snapshot, bars)

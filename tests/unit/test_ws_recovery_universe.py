@@ -218,6 +218,42 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual(["005930", "088350"], client.subscribed_symbols)
         self.assertEqual(2, len(client._socket.sent))
 
+    def test_websocket_client_reconnects_when_quote_subscription_socket_is_closed(self) -> None:
+        class _Socket:
+            def __init__(self, *, fail_first_send: bool = False) -> None:
+                self.sent: list[str] = []
+                self.fail_first_send = fail_first_send
+                self._send_count = 0
+
+            def send(self, payload: str) -> None:
+                self._send_count += 1
+                if self.fail_first_send and self._send_count == 1:
+                    raise RuntimeError('socket is already closed.')
+                self.sent.append(payload)
+
+            def close(self) -> None:
+                return None
+
+        class _ReconnectClient(KISWebSocketClient):
+            __slots__ = ('_test_sockets',)
+
+            def connect(self) -> None:
+                self._approval_key = 'approval'
+                self._active_quote_subscriptions.clear()
+                self._socket = self._test_sockets.pop(0)
+
+        first_socket = _Socket(fail_first_send=True)
+        second_socket = _Socket()
+        client = _ReconnectClient(build_settings(), KISClientStub())
+        client._test_sockets = [second_socket]
+        client._approval_key = 'approval'
+        client._socket = first_socket
+        client.subscribe_quotes(['005930'])
+
+        self.assertEqual(['005930'], client.subscribed_symbols)
+        self.assertEqual(0, len(first_socket.sent))
+        self.assertEqual(2, len(second_socket.sent))
+
     def test_websocket_client_resubscribes_after_disconnect(self) -> None:
         class _Socket:
             def __init__(self) -> None:

@@ -209,7 +209,7 @@ class KISClient:
             "turnover": self._to_float(output.get("acml_tr_pbmn")),
         }
 
-    def get_daily_turnover_history(self, symbol: str, lookback_days: int = 30) -> list[dict[str, float]]:
+    def get_daily_bars(self, symbol: str, lookback_days: int = 30) -> list[dict[str, float]]:
         today = datetime.now().strftime("%Y%m%d")
         data = self._request_json(
             method="GET",
@@ -225,14 +225,31 @@ class KISClient:
             },
         )
         output = data.get("output2", [])
-        history: list[dict[str, float]] = []
+        bars: list[dict[str, float]] = []
         if not isinstance(output, list):
-            return history
+            return bars
         for item in output[:lookback_days]:
+            bars.append(
+                {
+                    "open": self._to_float(item.get("stck_oprc")),
+                    "high": self._to_float(item.get("stck_hgpr")),
+                    "low": self._to_float(item.get("stck_lwpr")),
+                    "close": self._to_float(item.get("stck_clpr")),
+                    "volume": self._to_float(item.get("acml_vol")),
+                    "turnover": self._to_float(item.get("acml_tr_pbmn")),
+                }
+            )
+        return bars
+
+    def get_daily_turnover_history(self, symbol: str, lookback_days: int = 30) -> list[dict[str, float]]:
+        today = datetime.now().strftime("%Y%m%d")
+        bars = self.get_daily_bars(symbol, lookback_days=lookback_days)
+        history: list[dict[str, float]] = []
+        for item in bars:
             history.append(
                 {
-                    "close": self._to_float(item.get("stck_clpr")),
-                    "turnover": self._to_float(item.get("acml_tr_pbmn")),
+                    "close": float(item.get("close") or 0.0),
+                    "turnover": float(item.get("turnover") or 0.0),
                 }
             )
         return history
