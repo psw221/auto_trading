@@ -120,14 +120,10 @@ def bootstrap() -> ApplicationContainer:
         market_data_refresher=lambda symbols: _refresh_market_data_from_rest(symbols, kis_client, market_data_collector),
         universe_master_refresher=lambda: generate_master_csv(output=settings.universe_master_path),
         holiday_calendar_refresher=lambda: _refresh_holiday_calendar(settings),
-        daily_report_builder=lambda: {
-            'message': format_daily_report_summary(
-                build_daily_report_summary(
-                    settings.db_path,
-                    settings.universe_master_path,
-                )
-            )
-        },
+        daily_report_builder=lambda: _build_daily_report_payload(
+            settings.db_path,
+            settings.universe_master_path,
+        ),
     )
     runtime = RuntimeService(
         kis_ws_client=kis_ws_client,
@@ -164,6 +160,17 @@ def _refresh_holiday_calendar(settings: Settings) -> None:
         year=current_year,
         service_key=settings.holiday_api_service_key,
     )
+
+
+def _build_daily_report_payload(db_path, universe_master_path) -> dict[str, object]:
+    summary = build_daily_report_summary(
+        db_path,
+        universe_master_path,
+    )
+    return {
+        'report_date': summary.report_date,
+        'message': format_daily_report_summary(summary),
+    }
 
 
 def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISClient, market_data_collector: MarketDataCollector) -> dict[str, object]:

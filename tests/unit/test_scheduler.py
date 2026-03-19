@@ -189,6 +189,15 @@ class _StubSystemEventsRepository:
         )
         return len(self.events)
 
+    def exists_for_report_date(self, event_type: str, report_date: str) -> bool:
+        for event in self.events:
+            if event.get('event_type') != event_type:
+                continue
+            payload = event.get('payload') or {}
+            if str(payload.get('report_date', '')) == report_date:
+                return True
+        return False
+
 
 class SchedulerTargetsTest(unittest.TestCase):
     def _calendar(self) -> TradingCalendar:
@@ -424,11 +433,47 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             notifier=notifier,
-            daily_report_builder=lambda: {'message': '[AUTO_TRADING] 일일 리포트'},
+            daily_report_builder=lambda: {'report_date': '2026-03-16', 'message': '[AUTO_TRADING] 일일 리포트'},
         )
         scheduler.tick(__import__('datetime').datetime(2026, 3, 16, 15, 30))
         scheduler.tick(__import__('datetime').datetime(2026, 3, 16, 15, 31))
         self.assertEqual(1, len(notifier.daily_reports))
+
+    def test_tick_skips_daily_report_when_report_date_already_sent(self) -> None:
+        notifier = _StubNotifier()
+        system_events_repository = _StubSystemEventsRepository(
+            events=[
+                {
+                    'event_type': 'daily_report_notification_sent',
+                    'severity': 'INFO',
+                    'component': 'telegram',
+                    'message': '[AUTO_TRADING] 일일 리포트',
+                    'payload': {'report_date': '2026-03-16'},
+                }
+            ]
+        )
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=[]),
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+            system_events_repository=system_events_repository,
+            daily_report_builder=lambda: {'report_date': '2026-03-16', 'message': '[AUTO_TRADING] 일일 리포트'},
+        )
+        scheduler.tick(__import__('datetime').datetime(2026, 3, 16, 15, 30))
+        self.assertEqual(0, len(notifier.daily_reports))
+        skipped_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'daily_report_duplicate_skipped'
+        ]
+        self.assertEqual(1, len(skipped_events))
 
 
     def test_run_market_scan_blocks_price_exit_when_snapshot_is_stale(self) -> None:

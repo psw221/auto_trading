@@ -361,6 +361,16 @@ class SchedulerService:
             return
         if not isinstance(payload, dict) or not payload.get('message'):
             return
+        report_date = str(payload.get('report_date', '')).strip()
+        if self._daily_report_already_sent(report_date):
+            self._record_system_event(
+                event_type="daily_report_duplicate_skipped",
+                severity="INFO",
+                component="scheduler",
+                message="Skipped duplicate daily report send.",
+                payload={"report_date": report_date},
+            )
+            return
         try:
             self.notifier.send_daily_report(payload)
         except Exception as exc:
@@ -371,6 +381,17 @@ class SchedulerService:
                 message="Failed to send daily report.",
                 payload={"error": str(exc)},
             )
+
+    def _daily_report_already_sent(self, report_date: str) -> bool:
+        if not report_date or self.system_events_repository is None:
+            return False
+        exists = getattr(self.system_events_repository, "exists_for_report_date", None)
+        if not callable(exists):
+            return False
+        try:
+            return bool(exists("daily_report_notification_sent", report_date))
+        except Exception:
+            return False
 
     def _record_entry_skipped(self, signal: object, decision: object) -> None:
         self._record_system_event(
