@@ -59,9 +59,13 @@ class SuccessBroker:
 class CapturingNotifier:
     def __init__(self) -> None:
         self.trade_fill_payloads: list[dict[str, object]] = []
+        self.system_event_payloads: list[dict[str, object]] = []
 
     def send_trade_fill(self, payload: dict[str, object]) -> None:
         self.trade_fill_payloads.append(payload)
+
+    def send_system_event(self, payload: dict[str, object]) -> None:
+        self.system_event_payloads.append(payload)
 
 
 
@@ -420,6 +424,9 @@ class OrderEngineExceptionTest(unittest.TestCase):
         self.assertEqual('FILLED', saved.status)
         self.assertEqual(51, saved.filled_qty)
         self.assertEqual(0, saved.remaining_qty)
+        self.assertEqual(0, len(notifier.trade_fill_payloads))
+        self.assertEqual(1, len(notifier.system_event_payloads))
+        self.assertIn('100840', notifier.system_event_payloads[0]['message'])
         with db.transaction() as connection:
             row = connection.execute(
                 "SELECT event_type FROM system_events WHERE event_type = 'unknown_buy_order_recovered' ORDER BY id DESC LIMIT 1"

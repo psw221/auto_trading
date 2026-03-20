@@ -73,6 +73,7 @@ def bootstrap() -> ApplicationContainer:
     universe_builder = UniverseBuilder(kis_client)
     strategy_scorer = StrategyScorer()
     signal_engine = SignalEngine()
+    notifier = TelegramNotifier(settings, system_events_repository)
     portfolio_service = PortfolioService(
         positions_repository,
         orders_repository,
@@ -80,9 +81,9 @@ def bootstrap() -> ApplicationContainer:
         trade_logs_repository,
         kis_client,
         system_events_repository,
+        notifier,
     )
     risk_engine = RiskEngine(settings)
-    notifier = TelegramNotifier(settings, system_events_repository)
     fail_safe_monitor = FailSafeMonitor()
     trading_calendar = TradingCalendar(settings.holiday_calendar_path)
     recovery_service = RecoveryService(

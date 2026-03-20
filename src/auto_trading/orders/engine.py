@@ -295,6 +295,7 @@ class OrderEngine:
                         message="Recovered buy order from broker holdings during reconciliation.",
                         payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
                     )
+                    self._notify_order_recovered_from_broker_holdings(order, broker_position.qty)
                     continue
                 if order.status == "UNKNOWN":
                     self.system_events_repository.create(
@@ -327,6 +328,18 @@ class OrderEngine:
                 remaining_qty=matched.remaining_qty,
                 last_broker_update_at=utc_now().isoformat(),
             )
+
+    def _notify_order_recovered_from_broker_holdings(self, order: Order, broker_qty: int) -> None:
+        send_system_event = getattr(self.notifier, 'send_system_event', None)
+        if not callable(send_system_event):
+            return
+        send_system_event(
+            {
+                'severity': 'INFO',
+                'component': 'orders.engine',
+                'message': f"체결 알림을 받지 못한 주문을 브로커 보유 기준으로 복구했습니다. symbol={order.symbol} qty={broker_qty}",
+            }
+        )
 
     def _apply_reconciled_fills(
         self,

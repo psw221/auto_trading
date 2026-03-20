@@ -16,6 +16,7 @@ class PortfolioService:
     trade_logs_repository: object
     kis_client: object
     system_events_repository: object | None = None
+    notifier: object | None = None
     unresolved_sell_absence_threshold: int = 2
 
     def sync_from_broker(self) -> None:
@@ -426,6 +427,19 @@ class PortfolioService:
             severity="INFO",
             message="Marked buy order as filled from authoritative broker sync.",
             payload={"symbol": position.symbol, "position_id": position.id, "order_id": latest_order.id},
+        )
+        self._notify_order_recovered_from_broker_sync(position.symbol, broker_position.qty)
+
+    def _notify_order_recovered_from_broker_sync(self, symbol: str, broker_qty: int) -> None:
+        send_system_event = getattr(self.notifier, 'send_system_event', None)
+        if not callable(send_system_event):
+            return
+        send_system_event(
+            {
+                'severity': 'INFO',
+                'component': 'portfolio.sync',
+                'message': f"체결 알림을 받지 못한 주문을 강제 계좌 동기화로 복구했습니다. symbol={symbol} qty={broker_qty}",
+            }
         )
 
     def _force_close_position_from_authoritative_sync(self, local_position: Position, latest_order: object | None) -> None:

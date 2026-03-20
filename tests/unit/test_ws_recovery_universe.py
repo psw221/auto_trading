@@ -89,6 +89,14 @@ class OrderEngineStub:
             self.orders_repository.update_status(order.id, "ACKNOWLEDGED", remaining_qty=order.qty)
 
 
+class CapturingNotifier:
+    def __init__(self) -> None:
+        self.system_event_payloads: list[dict[str, object]] = []
+
+    def send_system_event(self, payload: dict[str, object]) -> None:
+        self.system_event_payloads.append(payload)
+
+
 class FixtureBasedTests(unittest.TestCase):
     def test_universe_builder_keeps_existing_current_universe_when_rebuild_result_is_empty(self) -> None:
         current_path = FIXTURES / 'current_universe.csv'
@@ -329,6 +337,7 @@ class FixtureBasedTests(unittest.TestCase):
                     BrokerPositionSnapshot(symbol="005930", qty=2, avg_price=70000.0, current_price=71000.0, name="Samsung"),
                 ]
 
+        notifier = CapturingNotifier()
         portfolio = PortfolioService(
             positions,
             orders,
@@ -336,9 +345,24 @@ class FixtureBasedTests(unittest.TestCase):
             TradeLogsRepository(db),
             _ForceSyncClient(),
             system_events,
+            notifier,
         )
         existing = Position(symbol="005930", qty=0, status="CLOSED")
         positions.upsert(existing)
+        recovered_order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='BUY',
+            qty=2,
+            order_type='LIMIT',
+            intent='ENTRY',
+            position_id=existing.id,
+            broker_order_id='BUY-005930',
+            status='UNKNOWN',
+            filled_qty=0,
+            remaining_qty=2,
+            price=70000.0,
+        )
+        orders.create(recovered_order)
         stale = Position(symbol="006360", qty=10, status="OPEN", current_price=30000.0)
         positions.upsert(stale)
         stale_order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
@@ -371,6 +395,8 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual('FILLED', saved_order.status)
         self.assertIn('005930', result['broker_symbols'])
         self.assertIn('006360', result['closed_symbols'])
+        self.assertEqual(1, len(notifier.system_event_payloads))
+        self.assertIn('005930', notifier.system_event_payloads[0]['message'])
 
     def test_force_sync_from_broker_aborts_on_empty_holdings_by_default(self) -> None:
         db_path = Path("data/test_fixture_force_sync_empty_abort.db")
