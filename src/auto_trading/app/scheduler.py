@@ -38,6 +38,8 @@ class SchedulerService:
     market_scan_interval_seconds: float = 30.0
     market_data_stale_after_seconds: int = 120
     universe_refresh_interval_seconds: int = 90
+    entry_pause_after_position_mismatch_seconds: int = 180
+    exit_retry_cooldown_seconds: int = 90
     loop_sleep_seconds: float = 1.0
     _last_pre_market_run_date: str | None = field(init=False, default=None)
     _last_post_market_run_date: str | None = field(init=False, default=None)
@@ -77,8 +79,9 @@ class SchedulerService:
     def run_market_scan(self) -> None:
         if not self.trading_calendar.is_trading_day(datetime.now()):
             return
+        self._reconcile_orders_from_broker()
+        self._sync_portfolio_from_broker()
         if self.fail_safe_monitor.should_block_new_orders():
-            self.order_engine.reconcile_unknown_orders()
             return
         self._ensure_market_universe_ready()
         if not self.universe_builder.symbols:
@@ -102,6 +105,18 @@ class SchedulerService:
                 continue
             decision = self.risk_engine.can_exit(exit_signal, portfolio)
             if decision.allowed:
+                if self._should_cooldown_exit(position):
+                    self._record_system_event(
+                        event_type='exit_retry_cooled_down',
+                        severity='INFO',
+                        component='scheduler',
+                        message='Skipped exit retry because a recent sell order was rejected.',
+                        payload={
+                            'symbol': getattr(position, 'symbol', ''),
+                            'reason': getattr(exit_signal, 'reason', ''),
+                        },
+                    )
+                    continue
                 self.order_engine.submit_exit(exit_signal, position)
 
         candidates = []
@@ -125,13 +140,31 @@ class SchedulerService:
         )
         self._send_top_candidate_scores(candidates)
         portfolio = self.portfolio_service.snapshot()
+        if self._should_pause_entries_due_to_position_sync():
+            for signal in self.signal_engine.evaluate_entry(candidates):
+                decision = type('Decision', (), {'allowed': False, 'reason': 'position_sync_unstable'})()
+                self._record_entry_skipped(signal, decision)
+            return
         for signal in self.signal_engine.evaluate_entry(candidates):
             decision = self.risk_engine.can_enter(signal, portfolio)
             if not decision.allowed:
                 self._record_entry_skipped(signal, decision)
                 continue
             sizing = self.risk_engine.target_order_size(signal, portfolio)
-            self.order_engine.submit_entry(signal, sizing)
+            try:
+                self.order_engine.submit_entry(signal, sizing)
+            except Exception as exc:
+                self._record_system_event(
+                    event_type='entry_submit_failed',
+                    severity='ERROR',
+                    component='scheduler',
+                    message='Failed to submit entry order.',
+                    payload={
+                        'symbol': getattr(signal, 'symbol', ''),
+                        'reason': str(exc),
+                    },
+                )
+                continue
 
     def run_post_market(self) -> None:
         if not self.trading_calendar.is_trading_day(datetime.now()):
@@ -207,6 +240,36 @@ class SchedulerService:
             )
             return
         self._record_market_data_refresh_summary(payload, result if isinstance(result, dict) else None)
+
+    def _reconcile_orders_from_broker(self) -> None:
+        reconcile = getattr(self.order_engine, 'reconcile_unknown_orders', None)
+        if not callable(reconcile):
+            return
+        try:
+            reconcile()
+        except Exception as exc:
+            self._record_system_event(
+                event_type='order_reconcile_failed',
+                severity='ERROR',
+                component='scheduler',
+                message='Failed to reconcile broker order state.',
+                payload={'error': str(exc)},
+            )
+
+    def _sync_portfolio_from_broker(self) -> None:
+        sync = getattr(self.portfolio_service, 'sync_from_broker', None)
+        if not callable(sync):
+            return
+        try:
+            sync()
+        except Exception as exc:
+            self._record_system_event(
+                event_type='portfolio_sync_failed',
+                severity='ERROR',
+                component='scheduler',
+                message='Failed to sync broker positions.',
+                payload={'error': str(exc)},
+            )
 
     def _refresh_universe_master(self) -> None:
         if self.universe_master_refresher is None:
@@ -344,6 +407,39 @@ class SchedulerService:
         if refreshed_dt.tzinfo is None:
             refreshed_dt = refreshed_dt.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - refreshed_dt).total_seconds() > self.market_data_stale_after_seconds
+
+    def _should_pause_entries_due_to_position_sync(self) -> bool:
+        if self.system_events_repository is None:
+            return False
+        exists_recent = getattr(self.system_events_repository, 'exists_recent_event', None)
+        if not callable(exists_recent):
+            return False
+        try:
+            return bool(
+                exists_recent(
+                    'position_mismatch',
+                    within_seconds=self.entry_pause_after_position_mismatch_seconds,
+                )
+            )
+        except Exception:
+            return False
+
+    def _should_cooldown_exit(self, position: object) -> bool:
+        orders_repository = getattr(self.order_engine, 'orders_repository', None)
+        if orders_repository is None:
+            return False
+        checker = getattr(orders_repository, 'has_recent_rejected_exit', None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(
+                checker(
+                    getattr(position, 'symbol', ''),
+                    within_seconds=self.exit_retry_cooldown_seconds,
+                )
+            )
+        except Exception:
+            return False
 
     def _send_daily_report(self) -> None:
         if self.notifier is None or self.daily_report_builder is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from auto_trading.broker.dto import BrokerFillSnapshot, BrokerPositionSnapshot
 from auto_trading.common.time import utc_now
@@ -18,32 +19,60 @@ class PortfolioService:
 
     def sync_from_broker(self) -> None:
         broker_positions = {item.symbol: item for item in self.kis_client.get_positions()}
+        open_orders = {item.order_no: item for item in self.kis_client.get_open_orders()}
+        daily_fills = list(self.kis_client.get_daily_fills())
         local_positions = self.positions_repository.find_all()
         local_positions = self._compact_duplicate_local_positions(local_positions)
 
         merged_symbols: set[str] = set()
+        positions_by_symbol: dict[str, list[Position]] = {}
         for local_position in local_positions:
+            positions_by_symbol.setdefault(local_position.symbol, []).append(local_position)
             broker_position = broker_positions.get(local_position.symbol)
             if broker_position is None:
+                if self._force_close_missing_position_after_unresolved_exit(
+                    local_position,
+                    open_orders=open_orders,
+                    daily_fills=daily_fills,
+                ):
+                    merged_symbols.add(local_position.symbol)
+                    continue
                 if local_position.status in {"OPEN", "OPENING", "CLOSING"} and local_position.qty > 0:
-                    local_position.status = "ERROR"
-                    local_position.exit_reason = "broker_position_missing"
-                    self.positions_repository.upsert(local_position)
                     self._log_sync_event(
                         event_type="position_mismatch",
                         severity="WARN",
-                        message="Local position not found in broker holdings during sync.",
+                        message="Broker holdings did not include a locally tracked active position during sync. Keeping local position for retry.",
                         payload={"symbol": local_position.symbol, "position_id": local_position.id},
                     )
                 continue
             if local_position.symbol in merged_symbols:
                 continue
+            was_active = local_position.status in {"OPEN", "OPENING", "CLOSING"} and local_position.qty > 0
             self._merge_broker_position(local_position, broker_position)
+            if not was_active:
+                self._log_sync_event(
+                    event_type="position_recovered",
+                    severity="INFO",
+                    message="Recovered broker position into existing local row.",
+                    payload={"symbol": local_position.symbol, "position_id": local_position.id},
+                )
             merged_symbols.add(local_position.symbol)
 
-        existing_symbols = {item.symbol for item in local_positions}
         for symbol, broker_position in broker_positions.items():
-            if symbol in existing_symbols:
+            if symbol in merged_symbols:
+                continue
+            restored_positions = positions_by_symbol.get(symbol, [])
+            if restored_positions:
+                restored_positions.sort(key=lambda item: (item.updated_at or "", item.id or 0), reverse=True)
+                restored_position = restored_positions[0]
+                self._merge_broker_position(restored_position, broker_position)
+                self._log_sync_event(
+                    event_type="position_recovered",
+                    severity="INFO",
+                    message="Recovered broker position into existing local row.",
+                    payload={"symbol": restored_position.symbol, "position_id": restored_position.id},
+                )
+                merged_symbols.add(symbol)
                 continue
             recovered_position = Position(
                 symbol=broker_position.symbol,
@@ -62,7 +91,6 @@ class PortfolioService:
                 payload={"symbol": recovered_position.symbol, "position_id": recovered_position.id},
             )
 
-        open_orders = {item.order_no: item for item in self.kis_client.get_open_orders()}
         for position in self.positions_repository.find_active():
             latest_order = self.orders_repository.find_latest_for_position(position.id)
             if latest_order is None or not latest_order.broker_order_id:
@@ -79,7 +107,7 @@ class PortfolioService:
                 last_broker_update_at=utc_now().isoformat(),
             )
 
-        for fill in self.kis_client.get_daily_fills():
+        for fill in daily_fills:
             order = self.orders_repository.find_by_broker_order_id(fill.order_no)
             if order is None:
                 continue
@@ -106,7 +134,7 @@ class PortfolioService:
         self.fills_repository.create(order.id, fill)
 
         position = self.get_position_by_id(order.position_id)
-        now = fill.filled_at or utc_now().isoformat()
+        now = self._normalize_fill_timestamp(fill.filled_at)
         was_closed = False
         if position is None:
             position = Position(
@@ -146,6 +174,35 @@ class PortfolioService:
             open_positions=self.get_open_positions(),
         )
 
+    @staticmethod
+    def _normalize_fill_timestamp(value: str) -> str:
+        raw = str(value or '').strip()
+        if not raw:
+            return utc_now().isoformat()
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            if len(raw) == 6 and raw.isdigit():
+                seoul = timezone(timedelta(hours=9))
+                now_local = utc_now().astimezone(seoul)
+                try:
+                    parsed = datetime(
+                        now_local.year,
+                        now_local.month,
+                        now_local.day,
+                        int(raw[0:2]),
+                        int(raw[2:4]),
+                        int(raw[4:6]),
+                        tzinfo=seoul,
+                    )
+                except ValueError:
+                    return utc_now().isoformat()
+            else:
+                return utc_now().isoformat()
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.isoformat()
+
     def _merge_broker_position(self, local_position: Position, broker_position: BrokerPositionSnapshot) -> None:
         local_position.name = broker_position.name or local_position.name
         local_position.qty = broker_position.qty
@@ -156,6 +213,49 @@ class PortfolioService:
             local_position.closed_at = None
             local_position.exit_reason = None
         self.positions_repository.upsert(local_position)
+
+    def _force_close_missing_position_after_unresolved_exit(
+        self,
+        local_position: Position,
+        *,
+        open_orders: dict[str, object],
+        daily_fills: list[BrokerFillSnapshot],
+    ) -> bool:
+        if local_position.status not in {"OPEN", "OPENING", "CLOSING"} or local_position.qty <= 0:
+            return False
+        latest_order = self.orders_repository.find_latest_for_position(local_position.id)
+        if latest_order is None:
+            return False
+        if latest_order.side != "SELL" or latest_order.status != "UNKNOWN" or not latest_order.broker_order_id:
+            return False
+        if latest_order.broker_order_id in open_orders:
+            return False
+        if any(fill.order_no == latest_order.broker_order_id for fill in daily_fills):
+            return False
+
+        now = utc_now().isoformat()
+        local_position.qty = 0
+        local_position.status = "CLOSED"
+        local_position.closed_at = now
+        local_position.exit_reason = "broker_position_absent_after_sell"
+        if latest_order.price is not None:
+            local_position.current_price = latest_order.price
+        self.positions_repository.upsert(local_position)
+        self.orders_repository.update_status(
+            latest_order.id,
+            "FILLED",
+            filled_qty=latest_order.qty,
+            remaining_qty=0,
+            last_broker_update_at=now,
+            failure_reason="Inferred from broker position absence after unresolved sell.",
+        )
+        self._log_sync_event(
+            event_type="position_closed_from_broker_absence",
+            severity="WARN",
+            message="Closed local position because broker no longer reports holdings after unresolved sell order.",
+            payload={"symbol": local_position.symbol, "position_id": local_position.id, "order_id": latest_order.id},
+        )
+        return True
 
     def _compact_duplicate_local_positions(self, local_positions: list[Position]) -> list[Position]:
         grouped: dict[str, list[Position]] = {}

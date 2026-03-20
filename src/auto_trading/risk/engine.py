@@ -11,7 +11,10 @@ class RiskEngine:
     settings: Settings
 
     def can_enter(self, signal: EntrySignal, portfolio: object) -> RiskDecision:
-        if len(portfolio.open_positions) >= self.settings.max_positions:
+        open_positions = list(getattr(portfolio, 'open_positions', []) or [])
+        if any(getattr(position, 'symbol', '') == signal.symbol for position in open_positions):
+            return RiskDecision(False, "already_holding")
+        if len(open_positions) >= self.settings.max_positions:
             return RiskDecision(False, "max_positions")
         return RiskDecision(True, "ok")
 

@@ -167,6 +167,138 @@ class FixtureBasedTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(event)
 
+    def test_portfolio_sync_keeps_active_position_when_broker_temporarily_omits_symbol(self) -> None:
+        db_path = Path("data/test_fixture_sync_keeps_active.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _MissingHoldingsClient(KISClientStub):
+            def get_positions(self):
+                return []
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _MissingHoldingsClient(),
+            system_events,
+        )
+        active = Position(symbol="005930", qty=2, status="OPEN")
+        positions.upsert(active)
+
+        portfolio.sync_from_broker()
+
+        restored = positions.find_active_by_symbol("005930")
+        self.assertIsNotNone(restored)
+        self.assertEqual("OPEN", restored.status)
+        self.assertEqual(2, restored.qty)
+        with db.transaction() as connection:
+            event = connection.execute(
+                "SELECT event_type, message FROM system_events WHERE event_type = 'position_mismatch' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNotNone(event)
+
+    def test_portfolio_sync_restores_closed_row_when_broker_still_has_symbol(self) -> None:
+        db_path = Path("data/test_fixture_sync_restore_closed.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            KISClientStub(),
+            system_events,
+        )
+        closed = Position(symbol="005930", qty=0, status="CLOSED", closed_at="2026-03-19T00:00:00+00:00", exit_reason="broker_position_missing")
+        positions.upsert(closed)
+
+        portfolio.sync_from_broker()
+
+        restored = positions.find_active_by_symbol("005930")
+        self.assertIsNotNone(restored)
+        self.assertEqual("OPEN", restored.status)
+        self.assertEqual(2, restored.qty)
+        self.assertEqual(70000.0, restored.avg_entry_price)
+        with db.transaction() as connection:
+            event = connection.execute(
+                "SELECT event_type, payload_json FROM system_events WHERE event_type = 'position_recovered' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNotNone(event)
+
+    def test_portfolio_sync_closes_missing_position_after_unresolved_sell(self) -> None:
+        db_path = Path("data/test_fixture_sync_force_close.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _NoHoldingClient(KISClientStub):
+            def get_positions(self):
+                return []
+
+            def get_open_orders(self):
+                return []
+
+            def get_daily_fills(self):
+                return []
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _NoHoldingClient(),
+            system_events,
+        )
+        active = Position(symbol="005930", qty=2, status="OPEN", current_price=71000.0)
+        positions.upsert(active)
+        order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='SELL',
+            qty=2,
+            order_type='LIMIT',
+            intent='TAKE_PROFIT',
+            position_id=active.id,
+            broker_order_id='ORDER-SELL-UNKNOWN',
+            status='UNKNOWN',
+            filled_qty=0,
+            remaining_qty=2,
+            price=71000.0,
+        )
+        orders.create(order)
+
+        portfolio.sync_from_broker()
+
+        restored = positions.find_by_id(active.id)
+        self.assertIsNotNone(restored)
+        self.assertEqual("CLOSED", restored.status)
+        self.assertEqual(0, restored.qty)
+        self.assertEqual("broker_position_absent_after_sell", restored.exit_reason)
+        saved_order = orders.find_by_id(order.id)
+        self.assertIsNotNone(saved_order)
+        self.assertEqual("FILLED", saved_order.status)
+        self.assertEqual(0, saved_order.remaining_qty)
+        with db.transaction() as connection:
+            event = connection.execute(
+                "SELECT event_type FROM system_events WHERE event_type = 'position_closed_from_broker_absence' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNotNone(event)
+
     def test_websocket_client_parses_order_notice_fixture(self) -> None:
         client = KISWebSocketClient(build_settings(), KISClientStub())
         payload = json.loads((FIXTURES / "kis_order_notice.json").read_text(encoding="utf-8"))

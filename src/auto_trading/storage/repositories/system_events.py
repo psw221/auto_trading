@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import timedelta
 
 from auto_trading.common.time import utc_now
 
@@ -40,6 +41,24 @@ class SystemEventsRepository:
                 ),
             )
         return int(cursor.lastrowid)
+
+    def exists_recent_event(self, event_type: str, *, within_seconds: int) -> bool:
+        if within_seconds <= 0:
+            return False
+        threshold = (utc_now() - timedelta(seconds=within_seconds)).isoformat()
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM system_events
+                WHERE event_type = ?
+                  AND occurred_at >= ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (event_type, threshold),
+            ).fetchone()
+        return row is not None
 
     def exists_for_report_date(self, event_type: str, report_date: str) -> bool:
         if not report_date:

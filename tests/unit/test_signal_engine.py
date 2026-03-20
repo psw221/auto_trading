@@ -65,6 +65,21 @@ class SignalEngineExitTest(unittest.TestCase):
         self.assertEqual("time_exit", signal.reason)
         self.assertEqual("MARKET", signal.order_type)
 
+    def test_holding_days_accepts_broker_hhmmss_with_fallback_date(self) -> None:
+        created_at = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+        position = Position(
+            symbol="005930",
+            qty=1,
+            avg_entry_price=100.0,
+            opened_at="151505",
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        snapshot = MarketSnapshot(symbol="005930", price=0.0, is_stale=True)
+        signal = self.engine.evaluate_exit(position, snapshot)
+        self.assertIsNotNone(signal)
+        self.assertEqual("time_exit", signal.reason)
+
 
 if __name__ == "__main__":
     unittest.main()

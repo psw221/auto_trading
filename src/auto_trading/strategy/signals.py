@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from auto_trading.portfolio.models import Position
 from auto_trading.strategy.models import EntrySignal, ExitSignal, MarketSnapshot, StrategyScore
@@ -33,8 +33,57 @@ class SignalEngine:
 
     @staticmethod
     def _holding_days(position: Position) -> int:
-        if not position.opened_at:
+        opened_at = SignalEngine._parse_position_opened_at(position)
+        if opened_at is None:
             return 0
-        opened_at = datetime.fromisoformat(position.opened_at)
         now = datetime.now(opened_at.tzinfo or timezone.utc)
         return (now.date() - opened_at.date()).days
+
+    @staticmethod
+    def _parse_position_opened_at(position: Position) -> datetime | None:
+        raw = str(position.opened_at or '').strip()
+        if not raw:
+            return None
+        try:
+            opened_at = datetime.fromisoformat(raw)
+        except ValueError:
+            if len(raw) != 6 or not raw.isdigit():
+                return None
+            fallback = SignalEngine._parse_fallback_timestamp(
+                getattr(position, 'created_at', None),
+                getattr(position, 'updated_at', None),
+            )
+            if fallback is None:
+                return None
+            seoul = timezone(timedelta(hours=9))
+            fallback_local = fallback.astimezone(seoul)
+            try:
+                return datetime(
+                    fallback_local.year,
+                    fallback_local.month,
+                    fallback_local.day,
+                    int(raw[0:2]),
+                    int(raw[2:4]),
+                    int(raw[4:6]),
+                    tzinfo=seoul,
+                )
+            except ValueError:
+                return None
+        if opened_at.tzinfo is None:
+            return opened_at.replace(tzinfo=timezone.utc)
+        return opened_at
+
+    @staticmethod
+    def _parse_fallback_timestamp(*values: object) -> datetime | None:
+        for value in values:
+            raw = str(value or '').strip()
+            if not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw)
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        return None

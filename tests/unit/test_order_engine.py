@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from auto_trading.broker.dto import BrokerBalance, BrokerOrderResponse, BrokerRealtimeEvent
+from auto_trading.broker.dto import BrokerBalance, BrokerFillSnapshot, BrokerOrderResponse, BrokerOrderSnapshot, BrokerRealtimeEvent
 from auto_trading.common.exceptions import BrokerApiError
 from auto_trading.config.schema import Settings
 from auto_trading.failsafe.monitor import FailSafeMonitor
@@ -263,6 +263,89 @@ class OrderEngineExceptionTest(unittest.TestCase):
         saved = orders.find_by_id(order.id)
         self.assertIsNotNone(saved)
         self.assertEqual(4925.0, saved.price)
+
+    def test_reconcile_submitted_order_applies_fill_and_sends_notification(self) -> None:
+        db_path = Path("data/test_engine_reconcile_submitted_runtime.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _ReconcilingBroker(SuccessBroker):
+            def get_open_orders(self):
+                return []
+
+            def get_daily_fills(self):
+                return [
+                    BrokerFillSnapshot(
+                        order_no='ORDER-SELL-1',
+                        symbol='006360',
+                        side='SELL',
+                        fill_qty=10,
+                        fill_price=30000.0,
+                        filled_at='2026-03-20T09:35:55+09:00',
+                    )
+                ]
+
+        broker = _ReconcilingBroker()
+        notifier = CapturingNotifier()
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            broker,
+            system_events,
+        )
+        engine = OrderEngine(
+            kis_client=broker,
+            orders_repository=orders,
+            positions_repository=positions,
+            portfolio_service=portfolio,
+            system_events_repository=system_events,
+            notifier=notifier,
+            fail_safe_monitor=FailSafeMonitor(),
+        )
+        position = __import__('auto_trading.portfolio.models', fromlist=['Position']).Position(
+            symbol='006360',
+            qty=10,
+            avg_entry_price=26250.0,
+            current_price=30000.0,
+            status='OPEN',
+        )
+        positions.upsert(position)
+        order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='006360',
+            side='SELL',
+            qty=10,
+            order_type='LIMIT',
+            intent='TAKE_PROFIT',
+            position_id=position.id,
+            broker_order_id='ORDER-SELL-1',
+            status='SUBMITTED',
+            filled_qty=0,
+            remaining_qty=10,
+            price=30000.0,
+        )
+        orders.create(order)
+
+        engine.reconcile_unknown_orders()
+
+        saved = orders.find_by_id(order.id)
+        self.assertIsNotNone(saved)
+        self.assertEqual('FILLED', saved.status)
+        self.assertEqual(10, saved.filled_qty)
+        self.assertEqual(0, saved.remaining_qty)
+        self.assertEqual(1, len(notifier.trade_fill_payloads))
+        payload = notifier.trade_fill_payloads[0]
+        self.assertEqual('006360', payload['symbol'])
+        self.assertEqual('TAKE_PROFIT', payload['reason'])
+        with db.transaction() as connection:
+            row = connection.execute("SELECT COUNT(*) AS cnt FROM fills WHERE order_id = ?", (order.id,)).fetchone()
+        self.assertEqual(1, row['cnt'])
 
 
 if __name__ == "__main__":

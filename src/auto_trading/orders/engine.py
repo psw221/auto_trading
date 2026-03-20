@@ -259,7 +259,7 @@ class OrderEngine:
                 payload={},
             )
             return
-        for order in self.orders_repository.find_unknown_orders():
+        for order in self.orders_repository.find_reconcilable_orders():
             matched = next((item for item in open_orders if item.order_no == order.broker_order_id), None)
             fill_matched = [item for item in daily_fills if item.order_no == order.broker_order_id]
             if fill_matched:
@@ -274,17 +274,31 @@ class OrderEngine:
                     remaining_qty=remaining_qty,
                     last_broker_update_at=latest_fill.filled_at,
                 )
-                for fill in fill_matched:
-                    self.portfolio_service.apply_fill(fill)
+                self._apply_reconciled_fills(order, fill_matched, total_fill_qty, remaining_qty)
                 continue
             if matched is None:
-                self.system_events_repository.create(
-                    event_type="unknown_order_unresolved",
-                    severity="WARN",
-                    component="orders.engine",
-                    message="Unknown order could not be resolved from broker open orders.",
-                    payload={"order_id": order.id, "broker_order_id": order.broker_order_id},
-                )
+                if order.status == "UNKNOWN":
+                    self.system_events_repository.create(
+                        event_type="unknown_order_unresolved",
+                        severity="WARN",
+                        component="orders.engine",
+                        message="Unknown order could not be resolved from broker open orders.",
+                        payload={"order_id": order.id, "broker_order_id": order.broker_order_id},
+                    )
+                else:
+                    self.orders_repository.update_status(
+                        order.id,
+                        "UNKNOWN",
+                        last_broker_update_at=utc_now().isoformat(),
+                        failure_reason="Submitted order not found in broker open orders or daily fills.",
+                    )
+                    self.system_events_repository.create(
+                        event_type="submitted_order_unresolved",
+                        severity="WARN",
+                        component="orders.engine",
+                        message="Submitted order not found in broker open orders or daily fills.",
+                        payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
+                    )
                 continue
             next_status = "PARTIALLY_FILLED" if matched.filled_qty > 0 else "ACKNOWLEDGED"
             self.orders_repository.update_status(
@@ -293,6 +307,32 @@ class OrderEngine:
                 filled_qty=matched.filled_qty,
                 remaining_qty=matched.remaining_qty,
                 last_broker_update_at=utc_now().isoformat(),
+            )
+
+    def _apply_reconciled_fills(
+        self,
+        order: Order,
+        fills: list[BrokerFillSnapshot],
+        total_fill_qty: int,
+        remaining_qty: int,
+    ) -> None:
+        fills_repository = getattr(self.portfolio_service, 'fills_repository', None)
+        current_filled_qty = order.filled_qty
+        for fill in fills:
+            existing_fill_id = None
+            if fills_repository is not None:
+                existing_fill_id = fills_repository.find_existing_id(order.id, fill)
+            if existing_fill_id is not None:
+                continue
+            current_filled_qty += fill.fill_qty
+            self.portfolio_service.apply_fill(fill)
+            self.notifier.send_trade_fill(
+                self._build_fill_notification_payload(
+                    fill=fill,
+                    order=order,
+                    filled_qty=min(current_filled_qty, total_fill_qty),
+                    remaining_qty=max(order.qty - current_filled_qty, 0) if remaining_qty != 0 else 0,
+                )
             )
 
     def _apply_submission_result(

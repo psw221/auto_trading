@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from auto_trading.common.time import utc_now
 from auto_trading.orders.models import Order
@@ -94,6 +95,18 @@ class OrdersRepository:
             ).fetchall()
         return [self._to_model(row) for row in rows]
 
+    def find_reconcilable_orders(self) -> list[Order]:
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM orders
+                WHERE status IN ('UNKNOWN', 'SUBMITTED', 'ACKNOWLEDGED', 'PARTIALLY_FILLED')
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+        return [self._to_model(row) for row in rows]
+
     def find_by_statuses(self, statuses: list[str]) -> list[Order]:
         placeholders = ", ".join("?" for _ in statuses)
         with self.db.transaction() as connection:
@@ -121,6 +134,26 @@ class OrdersRepository:
                 (symbol,),
             ).fetchall()
         return [self._to_model(row) for row in rows]
+
+    def has_recent_rejected_exit(self, symbol: str, *, within_seconds: int) -> bool:
+        if within_seconds <= 0:
+            return False
+        threshold = (utc_now() - timedelta(seconds=within_seconds)).isoformat()
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM orders
+                WHERE symbol = ?
+                  AND side = 'SELL'
+                  AND status = 'REJECTED'
+                  AND updated_at >= ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (symbol, threshold),
+            ).fetchone()
+        return row is not None
 
     def find_by_id(self, order_id: int) -> Order | None:
         with self.db.transaction() as connection:
@@ -189,3 +222,4 @@ class OrdersRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+

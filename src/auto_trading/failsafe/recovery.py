@@ -13,10 +13,10 @@ class RecoveryService:
     fail_safe_monitor: object
 
     def recover(self) -> None:
+        self._reconcile_reconcilable_orders()
         self.portfolio_service.sync_from_broker()
-        unresolved_orders = self.orders_repository.find_by_statuses(["UNKNOWN"])
-        if self.order_engine is not None and unresolved_orders:
-            self.order_engine.reconcile_unknown_orders()
+        self._reconcile_reconcilable_orders()
+        self.portfolio_service.sync_from_broker()
         error_positions = self.positions_repository.find_by_statuses(["ERROR"])
         self._reconcile_error_positions(error_positions)
         remaining_unknown_orders = self.orders_repository.find_by_statuses(["UNKNOWN"])
@@ -42,6 +42,21 @@ class RecoveryService:
             message="Recovery completed successfully.",
             payload={},
         )
+
+    def _reconcile_reconcilable_orders(self) -> None:
+        if self.order_engine is None:
+            return
+        find_reconcilable = getattr(self.orders_repository, "find_reconcilable_orders", None)
+        if callable(find_reconcilable):
+            try:
+                reconcilable_orders = find_reconcilable()
+            except Exception:
+                reconcilable_orders = []
+        else:
+            reconcilable_orders = self.orders_repository.find_by_statuses(["UNKNOWN"])
+        if not reconcilable_orders:
+            return
+        self.order_engine.reconcile_unknown_orders()
 
     def _reconcile_error_positions(self, positions: list[object]) -> None:
         broker_positions = {item.symbol: item for item in self.portfolio_service.kis_client.get_positions()}
