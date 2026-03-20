@@ -384,6 +384,12 @@ class PortfolioService:
             message="Closed local position because broker no longer reports holdings after repeated unresolved sell checks.",
             payload={"symbol": local_position.symbol, "position_id": local_position.id, "order_id": latest_order.id, "absence_count": absence_count},
         )
+        self._notify_order_reconciled_without_fill(
+            symbol=local_position.symbol,
+            side='SELL',
+            qty=latest_order.qty,
+            source='브로커 미보유 연속 확인',
+        )
         return True
 
     @staticmethod
@@ -431,14 +437,23 @@ class PortfolioService:
         self._notify_order_recovered_from_broker_sync(position.symbol, broker_position.qty)
 
     def _notify_order_recovered_from_broker_sync(self, symbol: str, broker_qty: int) -> None:
+        self._notify_order_reconciled_without_fill(
+            symbol=symbol,
+            side='BUY',
+            qty=broker_qty,
+            source='강제 계좌 동기화',
+        )
+
+    def _notify_order_reconciled_without_fill(self, *, symbol: str, side: str, qty: int, source: str) -> None:
         send_system_event = getattr(self.notifier, 'send_system_event', None)
         if not callable(send_system_event):
             return
+        side_label = '매수' if str(side).upper() == 'BUY' else '매도'
         send_system_event(
             {
                 'severity': 'INFO',
                 'component': 'portfolio.sync',
-                'message': f"체결 알림을 받지 못한 주문을 강제 계좌 동기화로 복구했습니다. symbol={symbol} qty={broker_qty}",
+                'message': f"체결 알림을 받지 못한 {side_label} 주문을 {source}로 복구했습니다. symbol={symbol} qty={qty}",
             }
         )
 
@@ -458,6 +473,12 @@ class PortfolioService:
                 remaining_qty=0,
                 last_broker_update_at=now,
                 failure_reason="Reconciled from authoritative broker sync.",
+            )
+            self._notify_order_reconciled_without_fill(
+                symbol=local_position.symbol,
+                side='SELL',
+                qty=latest_order.qty,
+                source='강제 계좌 동기화',
             )
         self._log_sync_event(
             event_type="position_force_closed",

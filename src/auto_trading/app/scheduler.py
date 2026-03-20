@@ -138,7 +138,8 @@ class SchedulerService:
             qualified_count=qualified_count,
             top_candidate_count=min(len(candidates), 10),
         )
-        self._send_top_candidate_scores(candidates)
+        held_symbols = {getattr(position, 'symbol', '') for position in getattr(portfolio, 'open_positions', []) if getattr(position, 'symbol', '')}
+        self._send_top_candidate_scores(candidates, excluded_symbols=held_symbols)
         portfolio = self.portfolio_service.snapshot()
         if self._should_pause_entries_due_to_position_sync():
             for signal in self.signal_engine.evaluate_entry(candidates):
@@ -623,10 +624,15 @@ class SchedulerService:
         except Exception:
             return
 
-    def _send_top_candidate_scores(self, candidates: list[object]) -> None:
+    def _send_top_candidate_scores(self, candidates: list[object], *, excluded_symbols: set[str] | None = None) -> None:
         if self.notifier is None or not candidates:
             return
-        ranked = sorted(candidates, key=lambda item: item.score_total, reverse=True)[:10]
+        excluded = {symbol for symbol in (excluded_symbols or set()) if symbol}
+        eligible = [item for item in candidates if getattr(item, 'symbol', '') not in excluded]
+        if not eligible:
+            self._last_target_scores_signature = tuple()
+            return
+        ranked = sorted(eligible, key=lambda item: item.score_total, reverse=True)[:10]
         signature = tuple((item.symbol, int(item.score_total), float(item.price)) for item in ranked)
         if signature == self._last_target_scores_signature:
             return

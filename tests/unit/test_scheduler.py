@@ -256,6 +256,53 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(0, universe_builder.rebuild_count)
         self.assertEqual(0, universe_builder.load_current_count)
 
+    def test_run_market_scan_excludes_already_held_symbols_from_target_alerts(self) -> None:
+        scores = self._build_scores()
+        notifier = _StubNotifier()
+        universe_builder = _StubUniverseBuilder(symbols=['000000', '000001', '000002'])
+        portfolio_service = _StubPortfolioService(
+            open_positions=[type('Position', (), {'symbol': '000000'})(), type('Position', (), {'symbol': '000001'})()]
+        )
+        scheduler = SchedulerService(
+            universe_builder=universe_builder,
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(1, len(notifier.payloads))
+        self.assertEqual(['000002'], [item['symbol'] for item in notifier.payloads[0]['items']])
+
+    def test_run_market_scan_skips_target_alert_when_all_candidates_are_already_held(self) -> None:
+        scores = self._build_scores()
+        notifier = _StubNotifier()
+        universe_builder = _StubUniverseBuilder(symbols=['000000', '000001'])
+        portfolio_service = _StubPortfolioService(
+            open_positions=[type('Position', (), {'symbol': '000000'})(), type('Position', (), {'symbol': '000001'})()]
+        )
+        scheduler = SchedulerService(
+            universe_builder=universe_builder,
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(0, len(notifier.payloads))
+
     def test_run_market_scan_loads_current_universe_before_rebuild(self) -> None:
         scores = self._build_scores()
         notifier = _StubNotifier()

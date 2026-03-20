@@ -265,6 +265,7 @@ class FixtureBasedTests(unittest.TestCase):
             def get_daily_fills(self):
                 return []
 
+        notifier = CapturingNotifier()
         portfolio = PortfolioService(
             positions,
             orders,
@@ -272,6 +273,7 @@ class FixtureBasedTests(unittest.TestCase):
             TradeLogsRepository(db),
             _NoHoldingClient(),
             system_events,
+            notifier,
         )
         active = Position(symbol="005930", qty=2, status="OPEN", current_price=71000.0)
         positions.upsert(active)
@@ -320,6 +322,9 @@ class FixtureBasedTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(check_event)
         self.assertIsNotNone(close_event)
+        self.assertEqual(1, len(notifier.system_event_payloads))
+        self.assertIn('매도 주문', notifier.system_event_payloads[0]['message'])
+        self.assertIn('005930', notifier.system_event_payloads[0]['message'])
 
     def test_force_sync_from_broker_closes_absent_and_restores_present_positions(self) -> None:
         db_path = Path("data/test_fixture_force_sync.db")
@@ -395,8 +400,10 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual('FILLED', saved_order.status)
         self.assertIn('005930', result['broker_symbols'])
         self.assertIn('006360', result['closed_symbols'])
-        self.assertEqual(1, len(notifier.system_event_payloads))
-        self.assertIn('005930', notifier.system_event_payloads[0]['message'])
+        self.assertEqual(2, len(notifier.system_event_payloads))
+        joined_messages = '\n'.join(item['message'] for item in notifier.system_event_payloads)
+        self.assertIn('005930', joined_messages)
+        self.assertIn('006360', joined_messages)
 
     def test_force_sync_from_broker_aborts_on_empty_holdings_by_default(self) -> None:
         db_path = Path("data/test_fixture_force_sync_empty_abort.db")
