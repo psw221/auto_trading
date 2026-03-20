@@ -61,6 +61,15 @@ class TelegramNotifier:
             payload=normalized,
         )
 
+    def send_trade_recovery(self, payload: object) -> None:
+        normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
+        message = self._format_trade_recovery_message(normalized)
+        self._send_message(
+            message=message,
+            event_type="trade_recovery_notification",
+            payload=normalized,
+        )
+
     def send_daily_report(self, payload: object) -> None:
         normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
         message = self._format_daily_report_message(normalized)
@@ -120,6 +129,36 @@ class TelegramNotifier:
 
     def _build_send_message_url(self) -> str:
         return f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
+
+    def _format_trade_recovery_message(self, payload: dict[str, object]) -> str:
+        symbol = str(payload.get("symbol", ""))
+        symbol_name = self._resolve_symbol_name(payload)
+        side = str(payload.get("side", ""))
+        side_label = self._format_side(side)
+        reason_label = self._format_reason(str(payload.get("reason", "")), side)
+        qty = self._format_qty(payload.get("qty", ""))
+        price = self._format_price(payload.get("price", ""))
+        source = str(payload.get("source", ""))
+        broker_order_id = str(payload.get("broker_order_id", ""))
+
+        symbol_line = symbol
+        if symbol_name and symbol_name != symbol:
+            symbol_line = f"{symbol_name} ({symbol})"
+
+        lines = [
+            f"[AUTO_TRADING] {side_label} 체결 복구",
+            f"종목: {symbol_line}",
+        ]
+        if qty:
+            lines.append(f"수량: {qty}주")
+        if price and price != '-':
+            lines.append(f"기준 가격: {price}원")
+        lines.append(f"사유: {reason_label}")
+        if source:
+            lines.append(f"복구 근거: {source}")
+        if broker_order_id:
+            lines.append(f"주문번호: {broker_order_id}")
+        return "\n".join(lines)
 
     def _format_trade_fill_message(self, payload: dict[str, object]) -> str:
         symbol = str(payload.get("symbol", ""))

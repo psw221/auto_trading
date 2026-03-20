@@ -92,9 +92,17 @@ class OrderEngineStub:
 class CapturingNotifier:
     def __init__(self) -> None:
         self.system_event_payloads: list[dict[str, object]] = []
+        self.trade_fill_payloads: list[dict[str, object]] = []
+        self.trade_recovery_payloads: list[dict[str, object]] = []
 
     def send_system_event(self, payload: dict[str, object]) -> None:
         self.system_event_payloads.append(payload)
+
+    def send_trade_fill(self, payload: dict[str, object]) -> None:
+        self.trade_fill_payloads.append(payload)
+
+    def send_trade_recovery(self, payload: dict[str, object]) -> None:
+        self.trade_recovery_payloads.append(payload)
 
 
 class FixtureBasedTests(unittest.TestCase):
@@ -322,9 +330,71 @@ class FixtureBasedTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(check_event)
         self.assertIsNotNone(close_event)
-        self.assertEqual(1, len(notifier.system_event_payloads))
-        self.assertIn('매도 주문', notifier.system_event_payloads[0]['message'])
-        self.assertIn('005930', notifier.system_event_payloads[0]['message'])
+        self.assertEqual(1, len(notifier.trade_recovery_payloads))
+        self.assertEqual('SELL', notifier.trade_recovery_payloads[0]['side'])
+        self.assertEqual('005930', notifier.trade_recovery_payloads[0]['symbol'])
+
+    def test_portfolio_sync_applies_daily_fill_and_sends_trade_fill_notification(self) -> None:
+        db_path = Path("data/test_fixture_sync_daily_fill_notify.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _DailyFillClient(KISClientStub):
+            def get_positions(self):
+                return [BrokerPositionSnapshot(symbol="005930", qty=2, avg_price=70000.0, current_price=71000.0, name="Samsung")]
+
+            def get_daily_fills(self):
+                return [
+                    BrokerFillSnapshot(
+                        order_no='ORDER-BUY-005930',
+                        symbol='005930',
+                        side='BUY',
+                        fill_qty=2,
+                        fill_price=70000.0,
+                        filled_at='2026-03-20T09:10:00+09:00',
+                    )
+                ]
+
+        notifier = CapturingNotifier()
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _DailyFillClient(),
+            system_events,
+            notifier,
+        )
+        position = Position(symbol='005930', qty=0, status='OPENING')
+        positions.upsert(position)
+        order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='BUY',
+            qty=2,
+            order_type='LIMIT',
+            intent='ENTRY',
+            position_id=position.id,
+            broker_order_id='ORDER-BUY-005930',
+            status='SUBMITTED',
+            filled_qty=0,
+            remaining_qty=2,
+            price=70000.0,
+        )
+        orders.create(order)
+
+        portfolio.sync_from_broker()
+
+        saved = orders.find_by_id(order.id)
+        self.assertIsNotNone(saved)
+        self.assertEqual('FILLED', saved.status)
+        self.assertEqual(1, len(notifier.trade_fill_payloads))
+        self.assertEqual('005930', notifier.trade_fill_payloads[0]['symbol'])
+        self.assertEqual('ENTRY', notifier.trade_fill_payloads[0]['reason'])
 
     def test_force_sync_from_broker_closes_absent_and_restores_present_positions(self) -> None:
         db_path = Path("data/test_fixture_force_sync.db")
@@ -400,10 +470,10 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual('FILLED', saved_order.status)
         self.assertIn('005930', result['broker_symbols'])
         self.assertIn('006360', result['closed_symbols'])
-        self.assertEqual(2, len(notifier.system_event_payloads))
-        joined_messages = '\n'.join(item['message'] for item in notifier.system_event_payloads)
-        self.assertIn('005930', joined_messages)
-        self.assertIn('006360', joined_messages)
+        self.assertEqual(2, len(notifier.trade_recovery_payloads))
+        joined_symbols = {item['symbol'] for item in notifier.trade_recovery_payloads}
+        self.assertIn('005930', joined_symbols)
+        self.assertIn('006360', joined_symbols)
 
     def test_force_sync_from_broker_aborts_on_empty_holdings_by_default(self) -> None:
         db_path = Path("data/test_fixture_force_sync_empty_abort.db")

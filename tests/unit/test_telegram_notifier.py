@@ -91,6 +91,36 @@ class TelegramNotifierTest(unittest.TestCase):
         self.assertIn("사유: 전략 진입", row["message"])
         self.assertIn("주문 진행: 1/3주 체결", row["message"])
 
+    def test_send_trade_recovery_posts_to_telegram(self) -> None:
+        notifier = TelegramNotifier(
+            _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
+            self.system_events,
+        )
+        with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
+            notifier.send_trade_recovery(
+                {
+                    "symbol": "005930",
+                    "symbol_name": "",
+                    "side": "SELL",
+                    "qty": 2,
+                    "price": 70000,
+                    "reason": "TAKE_PROFIT",
+                    "source": "브로커 미보유 연속 확인",
+                    "broker_order_id": "ORDER-1",
+                }
+            )
+        mocked.assert_called_once()
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT event_type, message FROM system_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual("trade_recovery_notification_sent", row["event_type"])
+        self.assertIn("매도 체결 복구", row["message"])
+        self.assertIn("Samsung Electronics (005930)", row["message"])
+        self.assertIn("수량: 2주", row["message"])
+        self.assertIn("기준 가격: 70,000원", row["message"])
+        self.assertIn("복구 근거: 브로커 미보유 연속 확인", row["message"])
+
     def test_send_target_scores_posts_to_telegram(self) -> None:
         notifier = TelegramNotifier(
             _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),

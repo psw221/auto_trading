@@ -113,10 +113,7 @@ class PortfolioService:
             order = self.orders_repository.find_by_broker_order_id(fill.order_no)
             if order is None:
                 continue
-            if fill.symbol in broker_positions:
-                self.fills_repository.create(order.id, fill)
-                continue
-            self.apply_fill(fill)
+            self._apply_reconciled_fill(order, fill)
 
     def force_sync_from_broker(
         self,
@@ -389,6 +386,7 @@ class PortfolioService:
             side='SELL',
             qty=latest_order.qty,
             source='브로커 미보유 연속 확인',
+            order=latest_order,
         )
         return True
 
@@ -434,28 +432,75 @@ class PortfolioService:
             message="Marked buy order as filled from authoritative broker sync.",
             payload={"symbol": position.symbol, "position_id": position.id, "order_id": latest_order.id},
         )
-        self._notify_order_recovered_from_broker_sync(position.symbol, broker_position.qty)
+        self._notify_order_recovered_from_broker_sync(position.symbol, broker_position.qty, order=latest_order)
 
-    def _notify_order_recovered_from_broker_sync(self, symbol: str, broker_qty: int) -> None:
+    def _notify_order_recovered_from_broker_sync(self, symbol: str, broker_qty: int, *, order: object | None = None) -> None:
         self._notify_order_reconciled_without_fill(
             symbol=symbol,
             side='BUY',
             qty=broker_qty,
             source='강제 계좌 동기화',
+            order=order,
         )
 
-    def _notify_order_reconciled_without_fill(self, *, symbol: str, side: str, qty: int, source: str) -> None:
-        send_system_event = getattr(self.notifier, 'send_system_event', None)
-        if not callable(send_system_event):
+    def _notify_order_reconciled_without_fill(self, *, symbol: str, side: str, qty: int, source: str, order: object | None = None) -> None:
+        send_trade_recovery = getattr(self.notifier, 'send_trade_recovery', None)
+        if not callable(send_trade_recovery):
             return
-        side_label = '매수' if str(side).upper() == 'BUY' else '매도'
-        send_system_event(
+        payload = {
+            'symbol': symbol,
+            'side': side,
+            'qty': qty,
+            'source': source,
+        }
+        if order is not None:
+            payload.update({
+                'reason': getattr(order, 'intent', ''),
+                'price': getattr(order, 'price', None),
+                'broker_order_id': getattr(order, 'broker_order_id', ''),
+            })
+        send_trade_recovery(payload)
+
+    def _notify_trade_fill_from_sync(self, order: object, fill: BrokerFillSnapshot, filled_qty: int, remaining_qty: int) -> None:
+        send_trade_fill = getattr(self.notifier, 'send_trade_fill', None)
+        if not callable(send_trade_fill):
+            return
+        position = self.get_position_by_id(getattr(order, 'position_id', None))
+        position_qty = position.qty if position is not None else None
+        symbol_name = position.name if position is not None else ''
+        send_trade_fill(
             {
-                'severity': 'INFO',
-                'component': 'portfolio.sync',
-                'message': f"체결 알림을 받지 못한 {side_label} 주문을 {source}로 복구했습니다. symbol={symbol} qty={qty}",
+                'symbol': fill.symbol,
+                'symbol_name': symbol_name,
+                'side': fill.side,
+                'reason': getattr(order, 'intent', ''),
+                'fill_qty': fill.fill_qty,
+                'fill_price': fill.fill_price,
+                'filled_at': fill.filled_at,
+                'filled_qty': filled_qty,
+                'total_qty': getattr(order, 'qty', 0),
+                'remaining_qty': remaining_qty,
+                'position_qty': position_qty,
             }
         )
+
+    def _apply_reconciled_fill(self, order: object, fill: BrokerFillSnapshot) -> bool:
+        existing_fill_id = self.fills_repository.find_existing_id(order.id, fill)
+        if existing_fill_id is not None:
+            return False
+        next_filled_qty = int(getattr(order, 'filled_qty', 0)) + int(fill.fill_qty)
+        remaining_qty = max(int(getattr(order, 'qty', 0)) - next_filled_qty, 0)
+        next_status = 'FILLED' if remaining_qty == 0 else 'PARTIALLY_FILLED'
+        self.orders_repository.update_status(
+            order.id,
+            next_status,
+            filled_qty=next_filled_qty,
+            remaining_qty=remaining_qty,
+            last_broker_update_at=fill.filled_at,
+        )
+        self.apply_fill(fill)
+        self._notify_trade_fill_from_sync(order, fill, next_filled_qty, remaining_qty)
+        return True
 
     def _force_close_position_from_authoritative_sync(self, local_position: Position, latest_order: object | None) -> None:
         now = utc_now().isoformat()
@@ -479,6 +524,7 @@ class PortfolioService:
                 side='SELL',
                 qty=latest_order.qty,
                 source='강제 계좌 동기화',
+                order=latest_order,
             )
         self._log_sync_event(
             event_type="position_force_closed",
