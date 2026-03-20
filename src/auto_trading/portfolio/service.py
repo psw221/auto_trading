@@ -117,6 +117,112 @@ class PortfolioService:
                 continue
             self.apply_fill(fill)
 
+    def force_sync_from_broker(
+        self,
+        *,
+        dry_run: bool = False,
+        allow_empty: bool = False,
+        confirm_rounds: int = 2,
+    ) -> dict[str, object]:
+        confirm_rounds = max(int(confirm_rounds or 1), 1)
+        broker_snapshots: list[dict[str, BrokerPositionSnapshot]] = []
+        for _ in range(confirm_rounds):
+            broker_snapshots.append({item.symbol: item for item in self.kis_client.get_positions()})
+        broker_positions = broker_snapshots[-1]
+        stable = all(self._broker_positions_signature(snapshot) == self._broker_positions_signature(broker_positions) for snapshot in broker_snapshots)
+        if not stable:
+            return {
+                "applied": False,
+                "aborted_reason": "unstable_broker_positions",
+                "broker_symbols": sorted(broker_positions.keys()),
+                "closed_symbols": [],
+                "recovered_symbols": [],
+                "created_symbols": [],
+            }
+        if not broker_positions and not allow_empty:
+            return {
+                "applied": False,
+                "aborted_reason": "empty_broker_positions",
+                "broker_symbols": [],
+                "closed_symbols": [],
+                "recovered_symbols": [],
+                "created_symbols": [],
+            }
+
+        local_positions = self.positions_repository.find_all()
+        local_positions = self._compact_duplicate_local_positions(local_positions)
+        positions_by_symbol: dict[str, list[Position]] = {}
+        for local_position in local_positions:
+            positions_by_symbol.setdefault(local_position.symbol, []).append(local_position)
+
+        closed_symbols: list[str] = []
+        recovered_symbols: list[str] = []
+        created_symbols: list[str] = []
+
+        for symbol, broker_position in broker_positions.items():
+            existing_positions = positions_by_symbol.get(symbol, [])
+            if existing_positions:
+                existing_positions.sort(key=lambda item: (item.updated_at or '', item.id or 0), reverse=True)
+                restored = existing_positions[0]
+                was_active = restored.status in {"OPEN", "OPENING", "CLOSING"} and restored.qty > 0
+                if not dry_run:
+                    self._merge_broker_position(restored, broker_position)
+                if not was_active:
+                    recovered_symbols.append(symbol)
+                    if not dry_run:
+                        self._log_sync_event(
+                            event_type="position_force_recovered",
+                            severity="INFO",
+                            message="Recovered local position from authoritative broker sync.",
+                            payload={"symbol": symbol, "position_id": restored.id},
+                        )
+                if not dry_run:
+                    self._reconcile_latest_order_from_authoritative_position(restored, broker_position)
+                continue
+
+            recovered_position = Position(
+                symbol=broker_position.symbol,
+                qty=broker_position.qty,
+                name=broker_position.name,
+                avg_entry_price=broker_position.avg_price,
+                current_price=broker_position.current_price,
+                status="OPEN",
+                opened_at=utc_now().isoformat(),
+            )
+            created_symbols.append(symbol)
+            if not dry_run:
+                self.positions_repository.upsert(recovered_position)
+                self._log_sync_event(
+                    event_type="position_force_created",
+                    severity="INFO",
+                    message="Created local position from authoritative broker sync.",
+                    payload={"symbol": symbol, "position_id": recovered_position.id},
+                )
+                self._reconcile_latest_order_from_authoritative_position(recovered_position, broker_position)
+
+        for symbol, existing_positions in positions_by_symbol.items():
+            if symbol in broker_positions:
+                continue
+            for local_position in existing_positions:
+                if local_position.status not in {"OPEN", "OPENING", "CLOSING"} or local_position.qty <= 0:
+                    continue
+                latest_order = self.orders_repository.find_latest_for_position(local_position.id)
+                if not dry_run:
+                    self._force_close_position_from_authoritative_sync(local_position, latest_order)
+                if symbol not in closed_symbols:
+                    closed_symbols.append(symbol)
+
+        return {
+            "applied": not dry_run,
+            "aborted_reason": "",
+            "broker_symbols": sorted(broker_positions.keys()),
+            "closed_symbols": closed_symbols,
+            "recovered_symbols": recovered_symbols,
+            "created_symbols": created_symbols,
+            "dry_run": dry_run,
+            "confirm_rounds": confirm_rounds,
+        }
+
     def get_open_positions(self) -> list[Position]:
         return self.positions_repository.find_active()
 
@@ -280,6 +386,10 @@ class PortfolioService:
         return True
 
     @staticmethod
+    def _broker_positions_signature(snapshot: dict[str, BrokerPositionSnapshot]) -> tuple[tuple[str, int, float], ...]:
+        return tuple(sorted((symbol, int(item.qty), float(item.avg_price)) for symbol, item in snapshot.items()))
+
+    @staticmethod
     def _next_unresolved_sell_absence_count(failure_reason: str | None) -> int:
         raw = str(failure_reason or '').strip()
         prefix = 'absence_check:'
@@ -292,6 +402,55 @@ class PortfolioService:
     @staticmethod
     def _encode_unresolved_sell_absence_count(count: int) -> str:
         return f'absence_check:{max(count, 1)}|Broker position absent for unresolved sell order.'
+
+    def _reconcile_latest_order_from_authoritative_position(
+        self,
+        position: Position,
+        broker_position: BrokerPositionSnapshot,
+    ) -> None:
+        latest_order = self.orders_repository.find_latest_for_position(position.id)
+        if latest_order is None or latest_order.side != "BUY":
+            return
+        if latest_order.status not in {"UNKNOWN", "SUBMITTED", "ACKNOWLEDGED", "PARTIALLY_FILLED"}:
+            return
+        self.orders_repository.update_status(
+            latest_order.id,
+            "FILLED",
+            filled_qty=max(latest_order.qty, broker_position.qty),
+            remaining_qty=0,
+            last_broker_update_at=utc_now().isoformat(),
+            failure_reason="Reconciled from authoritative broker sync.",
+        )
+        self._log_sync_event(
+            event_type="order_force_reconciled",
+            severity="INFO",
+            message="Marked buy order as filled from authoritative broker sync.",
+            payload={"symbol": position.symbol, "position_id": position.id, "order_id": latest_order.id},
+        )
+
+    def _force_close_position_from_authoritative_sync(self, local_position: Position, latest_order: object | None) -> None:
+        now = utc_now().isoformat()
+        closed_qty = local_position.qty
+        local_position.qty = 0
+        local_position.status = "CLOSED"
+        local_position.closed_at = now
+        local_position.exit_reason = "force_broker_sync_absent"
+        self.positions_repository.upsert(local_position)
+        if latest_order is not None and latest_order.side == "SELL" and latest_order.status in {"UNKNOWN", "SUBMITTED", "ACKNOWLEDGED", "PARTIALLY_FILLED"}:
+            self.orders_repository.update_status(
+                latest_order.id,
+                "FILLED",
+                filled_qty=latest_order.qty,
+                remaining_qty=0,
+                last_broker_update_at=now,
+                failure_reason="Reconciled from authoritative broker sync.",
+            )
+        self._log_sync_event(
+            event_type="position_force_closed",
+            severity="WARN",
+            message="Closed local position because authoritative broker sync did not report holdings.",
+            payload={"symbol": local_position.symbol, "position_id": local_position.id, "closed_qty": closed_qty},
+        )
 
     def _compact_duplicate_local_positions(self, local_positions: list[Position]) -> list[Position]:
         grouped: dict[str, list[Position]] = {}

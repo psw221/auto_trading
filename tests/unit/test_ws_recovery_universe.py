@@ -313,6 +313,167 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertIsNotNone(check_event)
         self.assertIsNotNone(close_event)
 
+    def test_force_sync_from_broker_closes_absent_and_restores_present_positions(self) -> None:
+        db_path = Path("data/test_fixture_force_sync.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _ForceSyncClient(KISClientStub):
+            def get_positions(self):
+                return [
+                    BrokerPositionSnapshot(symbol="005930", qty=2, avg_price=70000.0, current_price=71000.0, name="Samsung"),
+                ]
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _ForceSyncClient(),
+            system_events,
+        )
+        existing = Position(symbol="005930", qty=0, status="CLOSED")
+        positions.upsert(existing)
+        stale = Position(symbol="006360", qty=10, status="OPEN", current_price=30000.0)
+        positions.upsert(stale)
+        stale_order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='006360',
+            side='SELL',
+            qty=10,
+            order_type='LIMIT',
+            intent='TAKE_PROFIT',
+            position_id=stale.id,
+            broker_order_id='SELL-006360',
+            status='UNKNOWN',
+            filled_qty=0,
+            remaining_qty=10,
+            price=30000.0,
+        )
+        orders.create(stale_order)
+
+        result = portfolio.force_sync_from_broker()
+
+        recovered = positions.find_active_by_symbol('005930')
+        self.assertIsNotNone(recovered)
+        self.assertEqual(2, recovered.qty)
+        closed = positions.find_by_id(stale.id)
+        self.assertIsNotNone(closed)
+        self.assertEqual('CLOSED', closed.status)
+        self.assertEqual(0, closed.qty)
+        self.assertEqual('force_broker_sync_absent', closed.exit_reason)
+        saved_order = orders.find_by_id(stale_order.id)
+        self.assertIsNotNone(saved_order)
+        self.assertEqual('FILLED', saved_order.status)
+        self.assertIn('005930', result['broker_symbols'])
+        self.assertIn('006360', result['closed_symbols'])
+
+    def test_force_sync_from_broker_aborts_on_empty_holdings_by_default(self) -> None:
+        db_path = Path("data/test_fixture_force_sync_empty_abort.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _EmptyClient(KISClientStub):
+            def get_positions(self):
+                return []
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _EmptyClient(),
+            system_events,
+        )
+        stale = Position(symbol="006360", qty=10, status="OPEN")
+        positions.upsert(stale)
+
+        result = portfolio.force_sync_from_broker()
+
+        self.assertFalse(result['applied'])
+        self.assertEqual('empty_broker_positions', result['aborted_reason'])
+        still_open = positions.find_active_by_symbol('006360')
+        self.assertIsNotNone(still_open)
+        self.assertEqual(10, still_open.qty)
+
+    def test_force_sync_from_broker_dry_run_does_not_modify_positions(self) -> None:
+        db_path = Path("data/test_fixture_force_sync_dry_run.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _ForceSyncClient(KISClientStub):
+            def get_positions(self):
+                return []
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _ForceSyncClient(),
+            system_events,
+        )
+        stale = Position(symbol="006360", qty=10, status="OPEN")
+        positions.upsert(stale)
+
+        result = portfolio.force_sync_from_broker(dry_run=True, allow_empty=True, confirm_rounds=1)
+
+        self.assertFalse(result['applied'])
+        self.assertTrue(result['dry_run'])
+        self.assertIn('006360', result['closed_symbols'])
+        still_open = positions.find_active_by_symbol('006360')
+        self.assertIsNotNone(still_open)
+        self.assertEqual(10, still_open.qty)
+
+    def test_force_sync_from_broker_aborts_on_unstable_holdings(self) -> None:
+        db_path = Path("data/test_fixture_force_sync_unstable.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _UnstableClient(KISClientStub):
+            def __init__(self) -> None:
+                super().__init__()
+                self._calls = 0
+
+            def get_positions(self):
+                self._calls += 1
+                if self._calls == 1:
+                    return [BrokerPositionSnapshot(symbol="005930", qty=2, avg_price=70000.0, current_price=71000.0, name="Samsung")]
+                return []
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _UnstableClient(),
+            system_events,
+        )
+
+        result = portfolio.force_sync_from_broker(confirm_rounds=2, allow_empty=True)
+
+        self.assertFalse(result['applied'])
+        self.assertEqual('unstable_broker_positions', result['aborted_reason'])
+
     def test_websocket_client_parses_order_notice_fixture(self) -> None:
         client = KISWebSocketClient(build_settings(), KISClientStub())
         payload = json.loads((FIXTURES / "kis_order_notice.json").read_text(encoding="utf-8"))
