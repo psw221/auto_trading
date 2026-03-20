@@ -16,6 +16,7 @@ class PortfolioService:
     trade_logs_repository: object
     kis_client: object
     system_events_repository: object | None = None
+    unresolved_sell_absence_threshold: int = 2
 
     def sync_from_broker(self) -> None:
         broker_positions = {item.symbol: item for item in self.kis_client.get_positions()}
@@ -234,6 +235,27 @@ class PortfolioService:
             return False
 
         now = utc_now().isoformat()
+        absence_count = self._next_unresolved_sell_absence_count(latest_order.failure_reason)
+        if absence_count < self.unresolved_sell_absence_threshold:
+            self.orders_repository.update_status(
+                latest_order.id,
+                "UNKNOWN",
+                last_broker_update_at=now,
+                failure_reason=self._encode_unresolved_sell_absence_count(absence_count),
+            )
+            self._log_sync_event(
+                event_type="broker_position_absent_after_unresolved_sell_check",
+                severity="INFO",
+                message="Broker still does not report holdings for unresolved sell order. Waiting for repeated confirmation.",
+                payload={
+                    "symbol": local_position.symbol,
+                    "position_id": local_position.id,
+                    "order_id": latest_order.id,
+                    "absence_count": absence_count,
+                },
+            )
+            return False
+
         local_position.qty = 0
         local_position.status = "CLOSED"
         local_position.closed_at = now
@@ -247,15 +269,29 @@ class PortfolioService:
             filled_qty=latest_order.qty,
             remaining_qty=0,
             last_broker_update_at=now,
-            failure_reason="Inferred from broker position absence after unresolved sell.",
+            failure_reason=f"Inferred after {absence_count} consecutive missing broker position checks.",
         )
         self._log_sync_event(
             event_type="position_closed_from_broker_absence",
             severity="WARN",
-            message="Closed local position because broker no longer reports holdings after unresolved sell order.",
-            payload={"symbol": local_position.symbol, "position_id": local_position.id, "order_id": latest_order.id},
+            message="Closed local position because broker no longer reports holdings after repeated unresolved sell checks.",
+            payload={"symbol": local_position.symbol, "position_id": local_position.id, "order_id": latest_order.id, "absence_count": absence_count},
         )
         return True
+
+    @staticmethod
+    def _next_unresolved_sell_absence_count(failure_reason: str | None) -> int:
+        raw = str(failure_reason or '').strip()
+        prefix = 'absence_check:'
+        if raw.startswith(prefix):
+            remainder = raw[len(prefix):].split('|', 1)[0].strip()
+            if remainder.isdigit():
+                return int(remainder) + 1
+        return 1
+
+    @staticmethod
+    def _encode_unresolved_sell_absence_count(count: int) -> str:
+        return f'absence_check:{max(count, 1)}|Broker position absent for unresolved sell order.'
 
     def _compact_duplicate_local_positions(self, local_positions: list[Position]) -> list[Position]:
         grouped: dict[str, list[Position]] = {}

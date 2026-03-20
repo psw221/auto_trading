@@ -283,6 +283,16 @@ class FixtureBasedTests(unittest.TestCase):
         orders.create(order)
 
         portfolio.sync_from_broker()
+        first_pass_position = positions.find_by_id(active.id)
+        first_pass_order = orders.find_by_id(order.id)
+        self.assertIsNotNone(first_pass_position)
+        self.assertEqual("OPEN", first_pass_position.status)
+        self.assertEqual(2, first_pass_position.qty)
+        self.assertIsNotNone(first_pass_order)
+        self.assertEqual("UNKNOWN", first_pass_order.status)
+        self.assertIn("absence_check:1", first_pass_order.failure_reason or "")
+
+        portfolio.sync_from_broker()
 
         restored = positions.find_by_id(active.id)
         self.assertIsNotNone(restored)
@@ -294,10 +304,14 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual("FILLED", saved_order.status)
         self.assertEqual(0, saved_order.remaining_qty)
         with db.transaction() as connection:
-            event = connection.execute(
+            check_event = connection.execute(
+                "SELECT event_type FROM system_events WHERE event_type = 'broker_position_absent_after_unresolved_sell_check' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            close_event = connection.execute(
                 "SELECT event_type FROM system_events WHERE event_type = 'position_closed_from_broker_absence' ORDER BY id DESC LIMIT 1"
             ).fetchone()
-        self.assertIsNotNone(event)
+        self.assertIsNotNone(check_event)
+        self.assertIsNotNone(close_event)
 
     def test_websocket_client_parses_order_notice_fixture(self) -> None:
         client = KISWebSocketClient(build_settings(), KISClientStub())

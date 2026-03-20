@@ -249,6 +249,7 @@ class OrderEngine:
         try:
             open_orders = self.kis_client.get_open_orders()
             daily_fills = self.kis_client.get_daily_fills()
+            broker_positions = {item.symbol: item for item in self.kis_client.get_positions()}
         except (BrokerApiError, BrokerResponseError) as exc:
             self.fail_safe_monitor.on_api_error(exc)
             self.system_events_repository.create(
@@ -277,6 +278,24 @@ class OrderEngine:
                 self._apply_reconciled_fills(order, fill_matched, total_fill_qty, remaining_qty)
                 continue
             if matched is None:
+                broker_position = broker_positions.get(order.symbol)
+                if order.side == "BUY" and broker_position is not None and broker_position.qty > 0:
+                    self.orders_repository.update_status(
+                        order.id,
+                        "FILLED",
+                        filled_qty=order.qty,
+                        remaining_qty=0,
+                        last_broker_update_at=utc_now().isoformat(),
+                        failure_reason="Recovered from broker holdings during order reconciliation.",
+                    )
+                    self.system_events_repository.create(
+                        event_type="unknown_buy_order_recovered",
+                        severity="INFO",
+                        component="orders.engine",
+                        message="Recovered buy order from broker holdings during reconciliation.",
+                        payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
+                    )
+                    continue
                 if order.status == "UNKNOWN":
                     self.system_events_repository.create(
                         event_type="unknown_order_unresolved",

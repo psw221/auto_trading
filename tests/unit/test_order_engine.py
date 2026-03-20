@@ -347,6 +347,86 @@ class OrderEngineExceptionTest(unittest.TestCase):
             row = connection.execute("SELECT COUNT(*) AS cnt FROM fills WHERE order_id = ?", (order.id,)).fetchone()
         self.assertEqual(1, row['cnt'])
 
+    def test_reconcile_unknown_buy_order_recovers_from_broker_holdings(self) -> None:
+        db_path = Path("data/test_engine_reconcile_unknown_buy_runtime.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _HoldingBroker(SuccessBroker):
+            def get_positions(self):
+                return [
+                    __import__('auto_trading.broker.dto', fromlist=['BrokerPositionSnapshot']).BrokerPositionSnapshot(
+                        symbol='100840', qty=51, avg_price=51200.0, current_price=52800.0, name='SNT에너지'
+                    )
+                ]
+
+            def get_open_orders(self):
+                return []
+
+            def get_daily_fills(self):
+                return []
+
+        broker = _HoldingBroker()
+        notifier = CapturingNotifier()
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            broker,
+            system_events,
+        )
+        engine = OrderEngine(
+            kis_client=broker,
+            orders_repository=orders,
+            positions_repository=positions,
+            portfolio_service=portfolio,
+            system_events_repository=system_events,
+            notifier=notifier,
+            fail_safe_monitor=FailSafeMonitor(),
+        )
+        position = __import__('auto_trading.portfolio.models', fromlist=['Position']).Position(
+            symbol='100840',
+            qty=51,
+            avg_entry_price=51200.0,
+            current_price=52800.0,
+            status='OPEN',
+        )
+        positions.upsert(position)
+        order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='100840',
+            side='BUY',
+            qty=51,
+            order_type='LIMIT',
+            intent='ENTRY',
+            position_id=position.id,
+            broker_order_id='ORDER-BUY-100840',
+            status='UNKNOWN',
+            filled_qty=0,
+            remaining_qty=51,
+            price=51200.0,
+        )
+        orders.create(order)
+
+        engine.reconcile_unknown_orders()
+
+        saved = orders.find_by_id(order.id)
+        self.assertIsNotNone(saved)
+        self.assertEqual('FILLED', saved.status)
+        self.assertEqual(51, saved.filled_qty)
+        self.assertEqual(0, saved.remaining_qty)
+        with db.transaction() as connection:
+            row = connection.execute(
+                "SELECT event_type FROM system_events WHERE event_type = 'unknown_buy_order_recovered' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNotNone(row)
+
+
 
 if __name__ == "__main__":
     unittest.main()
