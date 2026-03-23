@@ -312,7 +312,11 @@ class OrderEngine:
                         message="Recovered buy order from broker holdings during reconciliation.",
                         payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
                     )
-                    self._notify_order_recovered_from_broker_holdings(order, broker_position.qty)
+                    record_estimated_entry = getattr(self.portfolio_service, 'record_estimated_entry_recovery', None)
+                    if callable(record_estimated_entry):
+                        record_estimated_entry(order, broker_position, source='브로커 보유 기준 주문 복구')
+                    else:
+                        self._notify_order_recovered_from_broker_holdings(order, broker_position.qty)
                     continue
                 if order.status == "UNKNOWN":
                     if self._should_close_stale_unknown_order(order, broker_positions):

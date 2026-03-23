@@ -414,6 +414,66 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual(1, len(notifier.trade_recovery_payloads))
         self.assertEqual('SELL', notifier.trade_recovery_payloads[0]['side'])
 
+    def test_portfolio_sync_records_estimated_entry_recovery_details(self) -> None:
+        db_path = Path("data/test_fixture_estimated_entry_recovery.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+        notifier = CapturingNotifier()
+
+        class _HoldingClient(KISClientStub):
+            def get_positions(self):
+                return [BrokerPositionSnapshot(symbol="005930", qty=2, avg_price=70000.0, current_price=71000.0, name="Samsung")]
+
+            def get_open_orders(self):
+                return []
+
+            def get_daily_fills(self):
+                return []
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _HoldingClient(),
+            system_events,
+            notifier,
+        )
+        position = Position(symbol='005930', qty=0, status='OPENING')
+        positions.upsert(position)
+        order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='BUY',
+            qty=2,
+            order_type='LIMIT',
+            intent='ENTRY',
+            position_id=position.id,
+            broker_order_id='ORDER-EST-BUY',
+            status='UNKNOWN',
+            filled_qty=0,
+            remaining_qty=2,
+            price=70500.0,
+        )
+        orders.create(order)
+
+        portfolio.record_estimated_entry_recovery(order, BrokerPositionSnapshot(symbol='005930', qty=2, avg_price=70000.0, current_price=71000.0, name='Samsung'), source='브로커 보유 기준 주문 복구')
+
+        restored = positions.find_active_by_symbol('005930')
+        self.assertIsNotNone(restored)
+        self.assertEqual('OPEN', restored.status)
+        self.assertEqual(70000.0, restored.avg_entry_price)
+        with db.transaction() as connection:
+            row = connection.execute("SELECT COUNT(*) AS cnt FROM trade_logs WHERE position_id = ?", (position.id,)).fetchone()
+        self.assertEqual(1, row['cnt'])
+        self.assertEqual(1, len(notifier.trade_recovery_payloads))
+        self.assertTrue(notifier.trade_recovery_payloads[0]['estimated'])
+        self.assertEqual(70000.0, notifier.trade_recovery_payloads[0]['price'])
+
     def test_portfolio_sync_applies_daily_fill_and_sends_trade_fill_notification(self) -> None:
         db_path = Path("data/test_fixture_sync_daily_fill_notify.db")
         if db_path.exists():

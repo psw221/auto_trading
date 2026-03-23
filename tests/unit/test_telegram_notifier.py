@@ -121,6 +121,36 @@ class TelegramNotifierTest(unittest.TestCase):
         self.assertIn("기준 가격: 70,000원", row["message"])
         self.assertIn("복구 근거: 브로커 미보유 연속 확인", row["message"])
 
+    def test_send_trade_recovery_marks_estimated_fill_details(self) -> None:
+        notifier = TelegramNotifier(
+            _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),
+            self.system_events,
+        )
+        with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
+            notifier.send_trade_recovery(
+                {
+                    "symbol": "005930",
+                    "symbol_name": "",
+                    "side": "BUY",
+                    "qty": 2,
+                    "price": 70000,
+                    "reason": "ENTRY",
+                    "source": "브로커 보유 기준 주문 복구",
+                    "broker_order_id": "ORDER-EST-1",
+                    "filled_at": "2026-03-23T09:10:00+09:00",
+                    "estimated": True,
+                }
+            )
+        mocked.assert_called_once()
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT event_type, message FROM system_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual("trade_recovery_notification_sent", row["event_type"])
+        self.assertIn("매수 추정 체결 복구", row["message"])
+        self.assertIn("기준 시각: 2026-03-23T09:10:00+09:00", row["message"])
+        self.assertIn("추정값입니다", row["message"])
+
     def test_send_target_scores_posts_to_telegram(self) -> None:
         notifier = TelegramNotifier(
             _build_settings(universe_master_path=Path("data/universe_master.sample.csv")),

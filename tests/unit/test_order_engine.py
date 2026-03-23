@@ -59,10 +59,14 @@ class SuccessBroker:
 class CapturingNotifier:
     def __init__(self) -> None:
         self.trade_fill_payloads: list[dict[str, object]] = []
+        self.trade_recovery_payloads: list[dict[str, object]] = []
         self.system_event_payloads: list[dict[str, object]] = []
 
     def send_trade_fill(self, payload: dict[str, object]) -> None:
         self.trade_fill_payloads.append(payload)
+
+    def send_trade_recovery(self, payload: dict[str, object]) -> None:
+        self.trade_recovery_payloads.append(payload)
 
     def send_system_event(self, payload: dict[str, object]) -> None:
         self.system_event_payloads.append(payload)
@@ -534,6 +538,7 @@ class OrderEngineExceptionTest(unittest.TestCase):
             TradeLogsRepository(db),
             broker,
             system_events,
+            notifier,
         )
         engine = OrderEngine(
             kis_client=broker,
@@ -575,8 +580,10 @@ class OrderEngineExceptionTest(unittest.TestCase):
         self.assertEqual(51, saved.filled_qty)
         self.assertEqual(0, saved.remaining_qty)
         self.assertEqual(0, len(notifier.trade_fill_payloads))
-        self.assertEqual(1, len(notifier.system_event_payloads))
-        self.assertIn('100840', notifier.system_event_payloads[0]['message'])
+        self.assertEqual(1, len(notifier.trade_recovery_payloads))
+        self.assertEqual('100840', notifier.trade_recovery_payloads[0]['symbol'])
+        self.assertTrue(notifier.trade_recovery_payloads[0]['estimated'])
+        self.assertEqual(51200.0, notifier.trade_recovery_payloads[0]['price'])
         with db.transaction() as connection:
             row = connection.execute(
                 "SELECT event_type FROM system_events WHERE event_type = 'unknown_buy_order_recovered' ORDER BY id DESC LIMIT 1"

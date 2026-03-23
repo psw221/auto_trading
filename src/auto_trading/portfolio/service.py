@@ -383,12 +383,17 @@ class PortfolioService:
             message="Closed local position because broker no longer reports holdings after repeated unresolved sell checks.",
             payload={"symbol": local_position.symbol, "position_id": local_position.id, "order_id": latest_order.id, "absence_count": absence_count},
         )
+        self.trade_logs_repository.close_trade(local_position, latest_order, latest_order.price or local_position.current_price or local_position.avg_entry_price)
         self._notify_order_reconciled_without_fill(
             symbol=local_position.symbol,
             side='SELL',
             qty=latest_order.qty,
             source='브로커 미보유 연속 확인',
             order=latest_order,
+            price=latest_order.price or local_position.current_price or local_position.avg_entry_price,
+            filled_at=now,
+            symbol_name=local_position.name,
+            estimated=True,
         )
         return True
 
@@ -434,33 +439,83 @@ class PortfolioService:
             message="Marked buy order as filled from authoritative broker sync.",
             payload={"symbol": position.symbol, "position_id": position.id, "order_id": latest_order.id},
         )
-        self._notify_order_recovered_from_broker_sync(position.symbol, broker_position.qty, order=latest_order)
+        self._record_estimated_entry_from_broker_state(position, latest_order, broker_position, source='강제 계좌 동기화')
 
-    def _notify_order_recovered_from_broker_sync(self, symbol: str, broker_qty: int, *, order: object | None = None) -> None:
+    def record_estimated_entry_recovery(self, order: object, broker_position: BrokerPositionSnapshot, *, source: str) -> None:
+        position = self.get_position_by_id(getattr(order, 'position_id', None))
+        if position is None:
+            return
+        position.symbol = broker_position.symbol or position.symbol
+        position.name = broker_position.name or position.name
+        position.avg_entry_price = broker_position.avg_price or position.avg_entry_price
+        position.current_price = broker_position.current_price or position.current_price
+        position.qty = max(int(getattr(position, 'qty', 0) or 0), int(getattr(broker_position, 'qty', 0) or 0))
+        position.status = 'OPEN'
+        self._record_estimated_entry_from_broker_state(position, order, broker_position, source=source)
+
+    def _record_estimated_entry_from_broker_state(self, position: Position, order: object, broker_position: BrokerPositionSnapshot, *, source: str) -> None:
+        estimated_at = position.opened_at or utc_now().isoformat()
+        position.opened_at = estimated_at
+        position.closed_at = None
+        position.exit_reason = None
+        if broker_position.avg_price:
+            position.avg_entry_price = broker_position.avg_price
+        if broker_position.current_price:
+            position.current_price = broker_position.current_price
+        if broker_position.qty:
+            position.qty = broker_position.qty
+        if broker_position.name:
+            position.name = broker_position.name
+        position.status = 'OPEN'
+        self.positions_repository.upsert(position)
+        has_open_trade = getattr(self.trade_logs_repository, 'has_open_trade', None)
+        if not callable(has_open_trade) or not has_open_trade(position.id):
+            self.trade_logs_repository.create_entry(position, order)
         self._notify_order_reconciled_without_fill(
-            symbol=symbol,
+            symbol=position.symbol,
             side='BUY',
-            qty=broker_qty,
-            source='강제 계좌 동기화',
+            qty=position.qty,
+            source=source,
             order=order,
+            price=broker_position.avg_price or getattr(order, 'price', None),
+            filled_at=estimated_at,
+            symbol_name=position.name,
+            estimated=True,
         )
 
-    def _notify_order_reconciled_without_fill(self, *, symbol: str, side: str, qty: int, source: str, order: object | None = None) -> None:
+    def _notify_order_reconciled_without_fill(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: int,
+        source: str,
+        order: object | None = None,
+        price: object | None = None,
+        filled_at: str = '',
+        symbol_name: str = '',
+        estimated: bool = True,
+    ) -> None:
         send_trade_recovery = getattr(self.notifier, 'send_trade_recovery', None)
         if not callable(send_trade_recovery):
             return
         payload = {
             'symbol': symbol,
+            'symbol_name': symbol_name,
             'side': side,
             'qty': qty,
             'source': source,
+            'estimated': estimated,
+            'filled_at': filled_at,
         }
         if order is not None:
             payload.update({
                 'reason': getattr(order, 'intent', ''),
-                'price': getattr(order, 'price', None),
+                'price': price if price is not None else getattr(order, 'price', None),
                 'broker_order_id': getattr(order, 'broker_order_id', ''),
             })
+        elif price is not None:
+            payload['price'] = price
         send_trade_recovery(payload)
 
     def _notify_trade_fill_from_sync(self, order: object, fill: BrokerFillSnapshot, filled_qty: int, remaining_qty: int) -> None:
@@ -521,12 +576,17 @@ class PortfolioService:
                 last_broker_update_at=now,
                 failure_reason="Reconciled from authoritative broker sync.",
             )
+            self.trade_logs_repository.close_trade(local_position, latest_order, latest_order.price or local_position.current_price or local_position.avg_entry_price)
             self._notify_order_reconciled_without_fill(
                 symbol=local_position.symbol,
                 side='SELL',
                 qty=latest_order.qty,
                 source='강제 계좌 동기화',
                 order=latest_order,
+                price=latest_order.price or local_position.current_price or local_position.avg_entry_price,
+                filled_at=now,
+                symbol_name=local_position.name,
+                estimated=True,
             )
         self._log_sync_event(
             event_type="position_force_closed",

@@ -145,8 +145,11 @@ class TelegramNotifier:
         if symbol_name and symbol_name != symbol:
             symbol_line = f"{symbol_name} ({symbol})"
 
+        estimated = bool(payload.get('estimated', False))
+        filled_at = str(payload.get('filled_at', '')).strip()
+
         lines = [
-            f"[AUTO_TRADING] {side_label} 체결 복구",
+            f"[AUTO_TRADING] {side_label} {'추정 ' if estimated else ''}체결 복구",
             f"종목: {symbol_line}",
         ]
         if qty:
@@ -154,8 +157,12 @@ class TelegramNotifier:
         if price and price != '-':
             lines.append(f"기준 가격: {price}원")
         lines.append(f"사유: {reason_label}")
+        if filled_at:
+            lines.append(f"기준 시각: {filled_at}")
         if source:
             lines.append(f"복구 근거: {source}")
+        if estimated:
+            lines.append("주의: 실제 체결가/체결시각은 브로커 체결내역 확인 전까지 추정값입니다.")
         if broker_order_id:
             lines.append(f"주문번호: {broker_order_id}")
         return "\n".join(lines)

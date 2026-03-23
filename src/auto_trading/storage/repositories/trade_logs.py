@@ -39,6 +39,23 @@ class TradeLogsRepository:
             )
         return int(cursor.lastrowid)
 
+    def has_open_trade(self, position_id: int | None) -> bool:
+        if position_id is None:
+            return False
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM trade_logs
+                WHERE position_id = ?
+                  AND exit_at IS NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (position_id,),
+            ).fetchone()
+        return row is not None
+
     def close_trade(self, position: Position, order: Order, exit_price: float) -> None:
         with self.db.transaction() as connection:
             row = connection.execute(
