@@ -256,6 +256,41 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(0, universe_builder.rebuild_count)
         self.assertEqual(0, universe_builder.load_current_count)
 
+    def test_run_market_scan_cools_down_exit_when_open_sell_order_exists(self) -> None:
+        scores = self._build_scores()
+        position = type('Position', (), {'symbol': '006360', 'qty': 10, 'avg_entry_price': 100.0, 'current_price': 120.0, 'status': 'OPEN'})()
+        exit_signal = type('ExitSignal', (), {'reason': 'take_profit', 'order_type': 'LIMIT', 'price': 120.0})()
+
+        class _OrdersRepo:
+            def find_open_for_symbol(self, symbol):
+                return [type('Order', (), {'side': 'SELL'})()]
+            def has_recent_rejected_exit(self, symbol, *, within_seconds):
+                return False
+
+        order_engine = _StubOrderEngine(orders_repository=_OrdersRepo())
+        system_events = _StubSystemEventsRepository()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['006360']),
+            market_data_collector=_StubCollector(
+                scores=scores,
+                latest_snapshots={'006360': MarketSnapshot(symbol='006360', price=120.0)},
+            ),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(exit_signals={'006360': exit_signal}),
+            portfolio_service=_StubPortfolioService(open_positions=[position]),
+            risk_engine=_StubRiskEngine(exit_allowed=True),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events,
+        )
+
+        scheduler.run_market_scan()
+
+        self.assertEqual([], order_engine.exits)
+        self.assertTrue(any(event['event_type'] == 'exit_retry_cooled_down' for event in system_events.events))
+
     def test_run_market_scan_excludes_already_held_symbols_from_target_alerts(self) -> None:
         scores = self._build_scores()
         notifier = _StubNotifier()

@@ -329,10 +329,12 @@ class PortfolioService:
         if local_position.status not in {"OPEN", "OPENING", "CLOSING"} or local_position.qty <= 0:
             return False
         latest_order = self.orders_repository.find_latest_for_position(local_position.id)
-        if latest_order is None:
+        unresolved_exit_order = self.orders_repository.find_latest_unresolved_exit_for_position(local_position.id)
+        if unresolved_exit_order is None:
             return False
-        if latest_order.side != "SELL" or latest_order.status != "UNKNOWN" or not latest_order.broker_order_id:
-            return False
+        if latest_order is not None and latest_order.side == "SELL" and latest_order.status == "UNKNOWN" and latest_order.broker_order_id:
+            unresolved_exit_order = latest_order
+        latest_order = unresolved_exit_order
         if latest_order.broker_order_id in open_orders:
             return False
         if any(fill.order_no == latest_order.broker_order_id for fill in daily_fills):

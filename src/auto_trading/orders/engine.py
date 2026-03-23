@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from auto_trading.broker.dto import (
     BrokerFillSnapshot,
@@ -23,6 +24,7 @@ class OrderEngine:
     system_events_repository: object
     notifier: object
     fail_safe_monitor: object
+    stale_unknown_order_seconds: int = 3600
 
     def submit_entry(self, signal: object, sizing: object) -> Order:
         if self.fail_safe_monitor.should_block_new_orders():
@@ -260,9 +262,24 @@ class OrderEngine:
                 payload={},
             )
             return
+        fill_map = {}
+        for fill in daily_fills:
+            fill_map.setdefault(fill.order_no, []).append(fill)
+        retried_daily_fills = False
         for order in self.orders_repository.find_reconcilable_orders():
             matched = next((item for item in open_orders if item.order_no == order.broker_order_id), None)
-            fill_matched = [item for item in daily_fills if item.order_no == order.broker_order_id]
+            fill_matched = list(fill_map.get(order.broker_order_id, []))
+            if not fill_matched and matched is None and not retried_daily_fills:
+                try:
+                    daily_fills_retry = self.kis_client.get_daily_fills()
+                except (BrokerApiError, BrokerResponseError):
+                    daily_fills_retry = []
+                else:
+                    retried_daily_fills = True
+                    fill_map.clear()
+                    for fill in daily_fills_retry:
+                        fill_map.setdefault(fill.order_no, []).append(fill)
+                    fill_matched = list(fill_map.get(order.broker_order_id, []))
             if fill_matched:
                 latest_fill = fill_matched[-1]
                 total_fill_qty = sum(item.fill_qty for item in fill_matched)
@@ -298,13 +315,28 @@ class OrderEngine:
                     self._notify_order_recovered_from_broker_holdings(order, broker_position.qty)
                     continue
                 if order.status == "UNKNOWN":
-                    self.system_events_repository.create(
-                        event_type="unknown_order_unresolved",
-                        severity="WARN",
-                        component="orders.engine",
-                        message="Unknown order could not be resolved from broker open orders.",
-                        payload={"order_id": order.id, "broker_order_id": order.broker_order_id},
-                    )
+                    if self._should_close_stale_unknown_order(order, broker_positions):
+                        self.orders_repository.update_status(
+                            order.id,
+                            "FAILED",
+                            last_broker_update_at=utc_now().isoformat(),
+                            failure_reason="Closed stale unknown order after repeated unresolved reconciliation checks.",
+                        )
+                        self.system_events_repository.create(
+                            event_type="stale_unknown_order_closed",
+                            severity="WARN",
+                            component="orders.engine",
+                            message="Closed stale unknown order after it remained unresolved beyond the cleanup threshold.",
+                            payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
+                        )
+                    else:
+                        self.system_events_repository.create(
+                            event_type="unknown_order_unresolved",
+                            severity="WARN",
+                            component="orders.engine",
+                            message="Unknown order could not be resolved from broker open orders.",
+                            payload={"order_id": order.id, "broker_order_id": order.broker_order_id},
+                        )
                 else:
                     self.orders_repository.update_status(
                         order.id,
@@ -328,6 +360,28 @@ class OrderEngine:
                 remaining_qty=matched.remaining_qty,
                 last_broker_update_at=utc_now().isoformat(),
             )
+
+    def _should_close_stale_unknown_order(self, order: Order, broker_positions: dict[str, object]) -> bool:
+        if order.status != 'UNKNOWN':
+            return False
+        symbol = getattr(order, 'symbol', '')
+        if order.side == 'BUY' and symbol and symbol in broker_positions:
+            return False
+        position = None
+        if getattr(order, 'position_id', None) is not None:
+            position = self.positions_repository.find_by_id(order.position_id)
+        if position is not None and getattr(position, 'status', '') in {'OPEN', 'OPENING', 'CLOSING'} and getattr(position, 'qty', 0) > 0:
+            return False
+        created_at = str(getattr(order, 'created_at', '') or '')
+        if not created_at:
+            return False
+        try:
+            created = __import__('datetime').datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        except ValueError:
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=utc_now().tzinfo)
+        return (utc_now() - created) >= timedelta(seconds=self.stale_unknown_order_seconds)
 
     def _notify_order_recovered_from_broker_holdings(self, order: Order, broker_qty: int) -> None:
         send_system_event = getattr(self.notifier, 'send_system_event', None)

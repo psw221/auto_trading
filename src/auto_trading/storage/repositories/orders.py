@@ -155,6 +155,23 @@ class OrdersRepository:
             ).fetchone()
         return row is not None
 
+    def find_stale_unknown_orders(self, *, older_than_seconds: int) -> list[Order]:
+        if older_than_seconds <= 0:
+            return []
+        threshold = (utc_now() - timedelta(seconds=older_than_seconds)).isoformat()
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM orders
+                WHERE status = 'UNKNOWN'
+                  AND created_at <= ?
+                ORDER BY created_at ASC
+                """,
+                (threshold,),
+            ).fetchall()
+        return [self._to_model(row) for row in rows]
+
     def find_by_id(self, order_id: int) -> Order | None:
         with self.db.transaction() as connection:
             row = connection.execute(
@@ -192,6 +209,26 @@ class OrdersRepository:
                 SELECT *
                 FROM orders
                 WHERE position_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (position_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_model(row)
+
+    def find_latest_unresolved_exit_for_position(self, position_id: int) -> Order | None:
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM orders
+                WHERE position_id = ?
+                  AND side = 'SELL'
+                  AND status = 'UNKNOWN'
+                  AND broker_order_id IS NOT NULL
+                  AND TRIM(COALESCE(broker_order_id, '')) <> ''
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,

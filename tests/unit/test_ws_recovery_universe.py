@@ -334,6 +334,86 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual('SELL', notifier.trade_recovery_payloads[0]['side'])
         self.assertEqual('005930', notifier.trade_recovery_payloads[0]['symbol'])
 
+    def test_portfolio_sync_uses_latest_unresolved_sell_even_if_newer_sell_was_rejected(self) -> None:
+        db_path = Path("data/test_fixture_sync_ignores_later_rejected_sell.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _NoHoldingClient(KISClientStub):
+            def get_positions(self):
+                return []
+
+            def get_open_orders(self):
+                return []
+
+            def get_daily_fills(self):
+                return []
+
+        notifier = CapturingNotifier()
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _NoHoldingClient(),
+            system_events,
+            notifier,
+        )
+        active = Position(symbol="005930", qty=2, status="OPEN", current_price=71000.0)
+        positions.upsert(active)
+        unresolved = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='SELL',
+            qty=2,
+            order_type='LIMIT',
+            intent='TAKE_PROFIT',
+            position_id=active.id,
+            broker_order_id='ORDER-SELL-UNKNOWN',
+            status='UNKNOWN',
+            filled_qty=0,
+            remaining_qty=2,
+            price=71000.0,
+        )
+        orders.create(unresolved)
+        rejected = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='SELL',
+            qty=2,
+            order_type='LIMIT',
+            intent='MA5_BREAKDOWN',
+            position_id=active.id,
+            broker_order_id='',
+            status='REJECTED',
+            filled_qty=0,
+            remaining_qty=2,
+            price=70500.0,
+            failure_reason='mock reject',
+        )
+        orders.create(rejected)
+
+        portfolio.sync_from_broker()
+        first_pass_order = orders.find_by_id(unresolved.id)
+        self.assertIsNotNone(first_pass_order)
+        self.assertEqual('UNKNOWN', first_pass_order.status)
+        self.assertIn('absence_check:1', first_pass_order.failure_reason or '')
+
+        portfolio.sync_from_broker()
+
+        restored = positions.find_by_id(active.id)
+        self.assertIsNotNone(restored)
+        self.assertEqual('CLOSED', restored.status)
+        self.assertEqual('broker_position_absent_after_sell', restored.exit_reason)
+        saved_order = orders.find_by_id(unresolved.id)
+        self.assertIsNotNone(saved_order)
+        self.assertEqual('FILLED', saved_order.status)
+        self.assertEqual(1, len(notifier.trade_recovery_payloads))
+        self.assertEqual('SELL', notifier.trade_recovery_payloads[0]['side'])
+
     def test_portfolio_sync_applies_daily_fill_and_sends_trade_fill_notification(self) -> None:
         db_path = Path("data/test_fixture_sync_daily_fill_notify.db")
         if db_path.exists():

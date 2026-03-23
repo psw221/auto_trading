@@ -351,6 +351,156 @@ class OrderEngineExceptionTest(unittest.TestCase):
             row = connection.execute("SELECT COUNT(*) AS cnt FROM fills WHERE order_id = ?", (order.id,)).fetchone()
         self.assertEqual(1, row['cnt'])
 
+    def test_reconcile_unknown_order_closes_stale_entry_when_still_unresolved(self) -> None:
+        db_path = Path("data/test_engine_stale_unknown_runtime.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _StaleBroker(SuccessBroker):
+            def get_open_orders(self):
+                return []
+
+            def get_daily_fills(self):
+                return []
+
+            def get_positions(self):
+                return []
+
+        broker = _StaleBroker()
+        notifier = CapturingNotifier()
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            broker,
+            system_events,
+        )
+        engine = OrderEngine(
+            kis_client=broker,
+            orders_repository=orders,
+            positions_repository=positions,
+            portfolio_service=portfolio,
+            system_events_repository=system_events,
+            notifier=notifier,
+            fail_safe_monitor=FailSafeMonitor(),
+        )
+        order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='BUY',
+            qty=1,
+            order_type='LIMIT',
+            intent='ENTRY',
+            position_id=None,
+            broker_order_id='ORDER-STALE-1',
+            status='UNKNOWN',
+            filled_qty=0,
+            remaining_qty=1,
+            price=70000.0,
+            created_at='2026-03-20T00:00:00+00:00',
+        )
+        orders.create(order)
+
+        engine.reconcile_unknown_orders()
+
+        saved = orders.find_by_id(order.id)
+        self.assertIsNotNone(saved)
+        self.assertEqual('FAILED', saved.status)
+        with db.transaction() as connection:
+            row = connection.execute("SELECT event_type FROM system_events WHERE event_type = 'stale_unknown_order_closed' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertIsNotNone(row)
+
+    def test_reconcile_submitted_order_rechecks_daily_fills_before_marking_unknown(self) -> None:
+        db_path = Path("data/test_engine_recheck_daily_fills_runtime.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _RetryFillBroker(SuccessBroker):
+            def __init__(self) -> None:
+                super().__init__()
+                self.daily_fill_calls = 0
+
+            def get_open_orders(self):
+                return []
+
+            def get_positions(self):
+                return []
+
+            def get_daily_fills(self):
+                self.daily_fill_calls += 1
+                if self.daily_fill_calls == 1:
+                    return []
+                return [
+                    BrokerFillSnapshot(
+                        order_no='ORDER-SELL-2',
+                        symbol='006360',
+                        side='SELL',
+                        fill_qty=10,
+                        fill_price=30000.0,
+                        filled_at='2026-03-20T09:35:55+09:00',
+                    )
+                ]
+
+        broker = _RetryFillBroker()
+        notifier = CapturingNotifier()
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            broker,
+            system_events,
+        )
+        engine = OrderEngine(
+            kis_client=broker,
+            orders_repository=orders,
+            positions_repository=positions,
+            portfolio_service=portfolio,
+            system_events_repository=system_events,
+            notifier=notifier,
+            fail_safe_monitor=FailSafeMonitor(),
+        )
+        position = __import__('auto_trading.portfolio.models', fromlist=['Position']).Position(
+            symbol='006360',
+            qty=10,
+            avg_entry_price=26250.0,
+            current_price=30000.0,
+            status='OPEN',
+        )
+        positions.upsert(position)
+        order = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='006360',
+            side='SELL',
+            qty=10,
+            order_type='LIMIT',
+            intent='TAKE_PROFIT',
+            position_id=position.id,
+            broker_order_id='ORDER-SELL-2',
+            status='SUBMITTED',
+            filled_qty=0,
+            remaining_qty=10,
+            price=30000.0,
+        )
+        orders.create(order)
+
+        engine.reconcile_unknown_orders()
+
+        saved = orders.find_by_id(order.id)
+        self.assertIsNotNone(saved)
+        self.assertEqual('FILLED', saved.status)
+        self.assertEqual(2, broker.daily_fill_calls)
+        self.assertEqual(1, len(notifier.trade_fill_payloads))
+
     def test_reconcile_unknown_buy_order_recovers_from_broker_holdings(self) -> None:
         db_path = Path("data/test_engine_reconcile_unknown_buy_runtime.db")
         if db_path.exists():

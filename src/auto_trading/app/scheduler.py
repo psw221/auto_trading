@@ -39,7 +39,7 @@ class SchedulerService:
     market_data_stale_after_seconds: int = 120
     universe_refresh_interval_seconds: int = 90
     entry_pause_after_position_mismatch_seconds: int = 180
-    exit_retry_cooldown_seconds: int = 90
+    exit_retry_cooldown_seconds: int = 180
     loop_sleep_seconds: float = 1.0
     _last_pre_market_run_date: str | None = field(init=False, default=None)
     _last_post_market_run_date: str | None = field(init=False, default=None)
@@ -429,18 +429,19 @@ class SchedulerService:
         orders_repository = getattr(self.order_engine, 'orders_repository', None)
         if orders_repository is None:
             return False
+        symbol = getattr(position, 'symbol', '')
         checker = getattr(orders_repository, 'has_recent_rejected_exit', None)
-        if not callable(checker):
-            return False
+        open_finder = getattr(orders_repository, 'find_open_for_symbol', None)
         try:
-            return bool(
-                checker(
-                    getattr(position, 'symbol', ''),
-                    within_seconds=self.exit_retry_cooldown_seconds,
-                )
-            )
+            if callable(open_finder):
+                open_orders = [item for item in open_finder(symbol) if getattr(item, 'side', '') == 'SELL']
+                if open_orders:
+                    return True
+            if callable(checker):
+                return bool(checker(symbol, within_seconds=self.exit_retry_cooldown_seconds))
         except Exception:
             return False
+        return False
 
     def _send_daily_report(self) -> None:
         if self.notifier is None or self.daily_report_builder is None:
