@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from auto_trading.common.time import utc_now
 from auto_trading.orders.models import Order
@@ -154,6 +154,40 @@ class OrdersRepository:
                 (symbol, threshold),
             ).fetchone()
         return row is not None
+
+    def has_filled_exit_intent_for_symbol_today(self, symbol: str, intent: str) -> bool:
+        if not symbol or not intent:
+            return False
+        seoul = timezone(timedelta(hours=9))
+        target_date = utc_now().astimezone(seoul).date()
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT updated_at, last_broker_update_at
+                FROM orders
+                WHERE symbol = ?
+                  AND side = 'SELL'
+                  AND status = 'FILLED'
+                  AND intent = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 50
+                """,
+                (symbol, intent),
+            ).fetchall()
+        for row in rows:
+            for key in ('last_broker_update_at', 'updated_at'):
+                raw = str(row[key] or '').strip()
+                if not raw:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(raw)
+                except ValueError:
+                    continue
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                if parsed.astimezone(seoul).date() == target_date:
+                    return True
+        return False
 
     def find_stale_unknown_orders(self, *, older_than_seconds: int) -> list[Order]:
         if older_than_seconds <= 0:

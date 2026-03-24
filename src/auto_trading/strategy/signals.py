@@ -15,6 +15,8 @@ class SignalEngine:
         return [EntrySignal(symbol=item.symbol, score_total=item.score_total, price=item.price) for item in qualified]
 
     def evaluate_exit(self, position: Position, snapshot: MarketSnapshot) -> ExitSignal | None:
+        if snapshot.is_stale:
+            return None
         has_fresh_price = snapshot.price > 0 and not snapshot.is_stale
         if has_fresh_price and position.avg_entry_price > 0 and snapshot.price <= position.avg_entry_price * 0.985:
             return ExitSignal(symbol=position.symbol, reason="stop_loss", order_type="MARKET")

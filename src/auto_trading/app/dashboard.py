@@ -670,6 +670,10 @@ def _map_missed_entry_reason(event_type: str, payload: dict[str, object]) -> str
         reason = str(payload.get('reason', '')).strip().lower()
         if reason == 'max_positions':
             return 'max_positions'
+        if reason == 'position_sync_unstable':
+            return 'position_sync_unstable'
+        if reason == 'recent_ma5_breakdown_exit':
+            return 'recent_ma5_breakdown_exit'
         return ''
     if normalized == 'order_blocked':
         return 'failsafe_blocked'
@@ -687,8 +691,10 @@ def _missed_entry_priority(reason_code: str) -> int:
         'order_rejected': 1,
         'order_unknown': 2,
         'failsafe_blocked': 3,
-        'already_holding': 4,
-        'max_positions': 5,
+        'recent_ma5_breakdown_exit': 4,
+        'position_sync_unstable': 5,
+        'already_holding': 6,
+        'max_positions': 7,
     }
     return priority.get(reason_code, 999)
 
@@ -697,7 +703,9 @@ def _format_missed_entry_reason(reason_code: str, detail: str) -> str:
     labels = {
         'max_positions': '보유 종목 수 한도 도달',
         'failsafe_blocked': 'Fail-safe 차단 상태',
+        'position_sync_unstable': '포지션 동기화 불안정으로 진입 제한',
         'already_holding': '이미 보유 중인 종목',
+        'recent_ma5_breakdown_exit': '당일 5일선 이탈 청산 종목 재진입 제한',
         'order_rejected': '주문 거절',
         'order_unknown': '주문 상태 미확정',
     }

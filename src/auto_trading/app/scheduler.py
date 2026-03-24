@@ -141,12 +141,12 @@ class SchedulerService:
         held_symbols = {getattr(position, 'symbol', '') for position in getattr(portfolio, 'open_positions', []) if getattr(position, 'symbol', '')}
         self._send_top_candidate_scores(candidates, excluded_symbols=held_symbols)
         portfolio = self.portfolio_service.snapshot()
-        if self._should_pause_entries_due_to_position_sync():
-            for signal in self.signal_engine.evaluate_entry(candidates):
-                decision = type('Decision', (), {'allowed': False, 'reason': 'position_sync_unstable'})()
-                self._record_entry_skipped(signal, decision)
-            return
         for signal in self.signal_engine.evaluate_entry(candidates):
+            entry_guard_reason = self._get_entry_guard_reason(signal)
+            if entry_guard_reason:
+                decision = type('Decision', (), {'allowed': False, 'reason': entry_guard_reason})()
+                self._record_entry_skipped(signal, decision)
+                continue
             decision = self.risk_engine.can_enter(signal, portfolio)
             if not decision.allowed:
                 self._record_entry_skipped(signal, decision)
@@ -409,9 +409,31 @@ class SchedulerService:
             refreshed_dt = refreshed_dt.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - refreshed_dt).total_seconds() > self.market_data_stale_after_seconds
 
-    def _should_pause_entries_due_to_position_sync(self) -> bool:
-        if self.system_events_repository is None:
+    def _get_entry_guard_reason(self, signal: object) -> str:
+        symbol = str(getattr(signal, 'symbol', '') or '').strip()
+        if not symbol:
+            return ''
+        if self._has_recent_position_mismatch_for_symbol(symbol):
+            return 'position_sync_unstable'
+        if self._has_same_day_ma5_breakdown_exit(symbol):
+            return 'recent_ma5_breakdown_exit'
+        return ''
+
+    def _has_recent_position_mismatch_for_symbol(self, symbol: str) -> bool:
+        if self.system_events_repository is None or not symbol:
             return False
+        exists_recent_for_symbol = getattr(self.system_events_repository, 'exists_recent_event_for_symbol', None)
+        if callable(exists_recent_for_symbol):
+            try:
+                return bool(
+                    exists_recent_for_symbol(
+                        'position_mismatch',
+                        symbol,
+                        within_seconds=self.entry_pause_after_position_mismatch_seconds,
+                    )
+                )
+            except Exception:
+                return False
         exists_recent = getattr(self.system_events_repository, 'exists_recent_event', None)
         if not callable(exists_recent):
             return False
@@ -422,6 +444,18 @@ class SchedulerService:
                     within_seconds=self.entry_pause_after_position_mismatch_seconds,
                 )
             )
+        except Exception:
+            return False
+
+    def _has_same_day_ma5_breakdown_exit(self, symbol: str) -> bool:
+        orders_repository = getattr(self.order_engine, 'orders_repository', None)
+        if orders_repository is None or not symbol:
+            return False
+        checker = getattr(orders_repository, 'has_filled_exit_intent_for_symbol_today', None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(symbol, 'MA5_BREAKDOWN'))
         except Exception:
             return False
 

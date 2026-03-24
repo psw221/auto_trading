@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from auto_trading.common.time import utc_now
 
@@ -59,6 +59,38 @@ class SystemEventsRepository:
                 (event_type, threshold),
             ).fetchone()
         return row is not None
+
+    def exists_recent_event_for_symbol(self, event_type: str, symbol: str, *, within_seconds: int) -> bool:
+        if within_seconds <= 0 or not symbol:
+            return False
+        threshold = utc_now() - timedelta(seconds=within_seconds)
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json, occurred_at
+                FROM system_events
+                WHERE event_type = ?
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT 200
+                """,
+                (event_type,),
+            ).fetchall()
+        for row in rows:
+            try:
+                occurred_at = datetime.fromisoformat(str(row['occurred_at'] or ''))
+            except ValueError:
+                continue
+            if occurred_at.tzinfo is None:
+                occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+            if occurred_at < threshold:
+                continue
+            try:
+                payload = json.loads(row['payload_json'] or '{}')
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if str(payload.get('symbol') or '').strip() == symbol:
+                return True
+        return False
 
     def exists_for_report_date(self, event_type: str, report_date: str) -> bool:
         if not report_date:

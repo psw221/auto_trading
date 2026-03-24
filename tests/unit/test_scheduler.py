@@ -212,6 +212,15 @@ class _StubSystemEventsRepository:
                 return True
         return False
 
+    def exists_recent_event_for_symbol(self, event_type: str, symbol: str, *, within_seconds: int) -> bool:
+        for event in reversed(self.events):
+            if event.get('event_type') != event_type:
+                continue
+            payload = event.get('payload') or {}
+            if str(payload.get('symbol', '')) == symbol:
+                return True
+        return False
+
 
 class SchedulerTargetsTest(unittest.TestCase):
     def _calendar(self) -> TradingCalendar:
@@ -660,7 +669,47 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual('max_positions', skipped_events[0]['payload']['reason'])
         self.assertEqual(0, len(order_engine.entries))
 
-    def test_run_market_scan_pauses_entries_when_position_sync_is_unstable(self) -> None:
+    def test_run_market_scan_blocks_entry_when_same_symbol_position_sync_is_unstable(self) -> None:
+        scores = self._build_scores()
+        signal_engine = _StubSignalEngine(
+            entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
+        )
+        system_events_repository = _StubSystemEventsRepository(
+            events=[
+                {
+                    'event_type': 'position_mismatch',
+                    'severity': 'WARN',
+                    'component': 'portfolio.sync',
+                    'message': 'Broker holdings did not include a locally tracked active position during sync. Keeping local position for retry.',
+                    'payload': {'symbol': '000000'},
+                }
+            ]
+        )
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(enter_allowed=True, enter_reason='ok'),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            entry_pause_after_position_mismatch_seconds=180,
+        )
+        scheduler.run_market_scan()
+        skipped_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'entry_skipped'
+        ]
+        self.assertEqual(1, len(skipped_events))
+        self.assertEqual('position_sync_unstable', skipped_events[0]['payload']['reason'])
+        self.assertEqual(0, len(order_engine.entries))
+
+    def test_run_market_scan_does_not_block_entry_for_other_symbol_position_mismatch(self) -> None:
         scores = self._build_scores()
         signal_engine = _StubSignalEngine(
             entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
@@ -696,8 +745,42 @@ class SchedulerTargetsTest(unittest.TestCase):
             event for event in system_events_repository.events
             if event['event_type'] == 'entry_skipped'
         ]
+        self.assertEqual(0, len(skipped_events))
+        self.assertEqual(1, len(order_engine.entries))
+
+    def test_run_market_scan_blocks_same_day_reentry_after_ma5_breakdown_exit(self) -> None:
+        scores = self._build_scores()
+        signal_engine = _StubSignalEngine(
+            entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
+        )
+        order_engine = _StubOrderEngine(
+            orders_repository=type(
+                'OrdersRepo',
+                (),
+                {'has_filled_exit_intent_for_symbol_today': staticmethod(lambda symbol, intent: symbol == '000000' and intent == 'MA5_BREAKDOWN')},
+            )(),
+        )
+        system_events_repository = _StubSystemEventsRepository()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=_StubCollector(scores=scores),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(enter_allowed=True, enter_reason='ok'),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+        )
+        scheduler.run_market_scan()
+        skipped_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'entry_skipped'
+        ]
         self.assertEqual(1, len(skipped_events))
-        self.assertEqual('position_sync_unstable', skipped_events[0]['payload']['reason'])
+        self.assertEqual('recent_ma5_breakdown_exit', skipped_events[0]['payload']['reason'])
         self.assertEqual(0, len(order_engine.entries))
 
     def test_run_market_scan_records_entry_submit_failure_without_crashing(self) -> None:
