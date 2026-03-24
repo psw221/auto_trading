@@ -127,6 +127,21 @@ class DashboardSummaryTest(unittest.TestCase):
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    "eod_reconcile_completed",
+                    "INFO",
+                    "portfolio.sync",
+                    "Completed end-of-day reconciliation from broker daily fills.",
+                    '{"report_date": "2026-03-13", "daily_fill_count": 1, "fills_backfilled_count": 1, "matched_order_count": 1, "reconciled_order_count": 1, "reconciled_position_count": 1, "trade_logs_backfilled_count": 1, "unmatched_fill_count": 0}',
+                    "2026-03-13T07:05:00+09:00",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO system_events (
+                    event_type, severity, component, message, payload_json, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
                     "market_data_refresh_degraded",
                     "WARN",
                     "scheduler",
@@ -237,6 +252,8 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertAlmostEqual(2.14, daily_summary.average_closed_pnl_pct)
         self.assertEqual('005930', daily_summary.best_trade['symbol'])
         self.assertEqual('005930', daily_summary.worst_trade['symbol'])
+        self.assertTrue(daily_summary.eod_reconciled)
+        self.assertEqual(1, daily_summary.eod_reconcile_summary['fills_backfilled_count'])
         self.assertEqual(1, len(daily_summary.missed_entries))
         self.assertEqual('005930', daily_summary.missed_entries[0]['symbol'])
         self.assertEqual('max_positions', daily_summary.missed_entries[0]['reason_code'])
@@ -246,6 +263,7 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertIn('미실현손익: +2,000원', daily_rendered)
         self.assertIn('총손익: +5,000원', daily_rendered)
         self.assertIn('승률: 100.0%', daily_rendered)
+        self.assertIn('EOD 보정: 완료 (fills=1, trade_logs=1)', daily_rendered)
         self.assertIn('[놓친 기회]', daily_rendered)
         self.assertIn('보유 종목 수 한도 도달', daily_rendered)
         self.assertIn('[청산 내역]', daily_rendered)

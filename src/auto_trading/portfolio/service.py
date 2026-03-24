@@ -221,6 +221,112 @@ class PortfolioService:
             "confirm_rounds": confirm_rounds,
         }
 
+    def backfill_missing_trade_log_exits(
+        self,
+        *,
+        use_fill_data: bool = False,
+        candidate_order_ids: set[int] | None = None,
+    ) -> dict[str, object]:
+        filled_exits = self.orders_repository.find_filled_exits_missing_trade_logs()
+        backfilled: list[dict[str, object]] = []
+        skipped: list[dict[str, object]] = []
+        for order in filled_exits:
+            if candidate_order_ids is not None and order.id not in candidate_order_ids:
+                continue
+            position = self.get_position_by_id(getattr(order, 'position_id', None))
+            if position is None:
+                skipped.append({'order_id': order.id, 'symbol': order.symbol, 'reason': 'position_missing'})
+                continue
+            fill_row = self.fills_repository.find_latest_for_order(order.id) if use_fill_data else None
+            self._ensure_trade_entry_for_exit(position, order)
+            has_open_trade = getattr(self.trade_logs_repository, 'has_open_trade', None)
+            if callable(has_open_trade) and not has_open_trade(position.id):
+                skipped.append({'order_id': order.id, 'symbol': order.symbol, 'reason': 'open_trade_missing'})
+                continue
+            exit_price = self._prepare_position_for_trade_log_exit(position, order, fill_row=fill_row)
+            self.trade_logs_repository.close_trade(position, order, exit_price)
+            backfilled.append(
+                {
+                    'order_id': order.id,
+                    'symbol': order.symbol,
+                    'exit_price': exit_price,
+                    'source': 'fill' if fill_row is not None else 'order',
+                }
+            )
+        return {'backfilled': backfilled, 'skipped': skipped}
+
+    def reconcile_eod_daily_fills(self) -> dict[str, object]:
+        daily_fills = sorted(
+            list(self.kis_client.get_daily_fills()),
+            key=lambda item: (self._normalize_fill_timestamp(getattr(item, 'filled_at', '')), getattr(item, 'order_no', ''), getattr(item, 'symbol', '')),
+        )
+        matched_order_ids: set[int] = set()
+        reconciled_order_ids: set[int] = set()
+        reconciled_position_ids: set[int] = set()
+        unmatched_fills: list[dict[str, object]] = []
+        fills_backfilled = 0
+
+        for fill in daily_fills:
+            order = self.orders_repository.find_by_broker_order_id(fill.order_no)
+            if order is None:
+                unmatched_fills.append(
+                    {
+                        'broker_order_id': fill.order_no,
+                        'symbol': fill.symbol,
+                        'side': fill.side,
+                        'fill_qty': fill.fill_qty,
+                        'fill_price': fill.fill_price,
+                        'filled_at': fill.filled_at,
+                    }
+                )
+                continue
+            matched_order_ids.add(order.id)
+            before_status = str(getattr(order, 'status', ''))
+            if fill.side == 'SELL':
+                position = self.get_position_by_id(getattr(order, 'position_id', None))
+                if position is not None:
+                    self._ensure_trade_entry_for_exit(position, order)
+            if self._apply_reconciled_fill(order, fill):
+                fills_backfilled += 1
+            refreshed_order = self.orders_repository.find_by_id(order.id)
+            if refreshed_order is not None and refreshed_order.status != before_status:
+                reconciled_order_ids.add(order.id)
+            position_id = getattr(order, 'position_id', None)
+            if position_id is not None:
+                reconciled_position_ids.add(int(position_id))
+
+        trade_log_result = self.backfill_missing_trade_log_exits(
+            use_fill_data=True,
+            candidate_order_ids=matched_order_ids if matched_order_ids else set(),
+        )
+        reconciled_position_ids.update(
+            int(getattr(self.orders_repository.find_by_id(item['order_id']), 'position_id', 0) or 0)
+            for item in trade_log_result.get('backfilled', [])
+            if item.get('order_id') is not None
+        )
+        reconciled_position_ids.discard(0)
+
+        result = {
+            'report_date': datetime.now(timezone(timedelta(hours=9))).date().isoformat(),
+            'daily_fill_count': len(daily_fills),
+            'fills_backfilled_count': fills_backfilled,
+            'matched_order_count': len(matched_order_ids),
+            'reconciled_order_count': len(reconciled_order_ids),
+            'reconciled_position_count': len(reconciled_position_ids),
+            'trade_logs_backfilled_count': len(trade_log_result.get('backfilled', [])),
+            'unmatched_fill_count': len(unmatched_fills),
+            'unmatched_fills': unmatched_fills,
+            'trade_logs_backfilled': trade_log_result.get('backfilled', []),
+            'trade_logs_skipped': trade_log_result.get('skipped', []),
+        }
+        self._log_sync_event(
+            event_type='eod_reconcile_completed',
+            severity='INFO',
+            message='Completed end-of-day reconciliation from broker daily fills.',
+            payload=result,
+        )
+        return result
+
     def get_open_positions(self) -> list[Position]:
         return self.positions_repository.find_active()
 
@@ -383,6 +489,7 @@ class PortfolioService:
             message="Closed local position because broker no longer reports holdings after repeated unresolved sell checks.",
             payload={"symbol": local_position.symbol, "position_id": local_position.id, "order_id": latest_order.id, "absence_count": absence_count},
         )
+        self._ensure_trade_entry_for_exit(local_position, latest_order)
         self.trade_logs_repository.close_trade(local_position, latest_order, latest_order.price or local_position.current_price or local_position.avg_entry_price)
         self._notify_order_reconciled_without_fill(
             symbol=local_position.symbol,
@@ -483,6 +590,69 @@ class PortfolioService:
             estimated=True,
         )
 
+    def _prepare_position_for_trade_log_exit(
+        self,
+        position: Position,
+        order: object,
+        *,
+        fill_row: dict[str, object] | None = None,
+    ) -> float:
+        exit_at = ''
+        exit_price = 0.0
+        if fill_row is not None:
+            exit_at = self._normalize_fill_timestamp(str(fill_row.get('filled_at') or ''))
+            try:
+                exit_price = float(fill_row.get('fill_price') or 0.0)
+            except (TypeError, ValueError):
+                exit_price = 0.0
+        if not exit_at:
+            exit_at = getattr(order, 'updated_at', None) or utc_now().isoformat()
+        if exit_price <= 0.0:
+            exit_price = float(getattr(order, 'price', None) or position.current_price or position.avg_entry_price or 0.0)
+        position.qty = 0
+        position.status = 'CLOSED'
+        position.closed_at = exit_at
+        position.current_price = exit_price
+        position.exit_reason = getattr(order, 'intent', None) or position.exit_reason or 'EXIT'
+        self.positions_repository.upsert(position)
+        return exit_price
+
+    def _ensure_trade_entry_for_exit(self, position: Position, order: object) -> None:
+        has_open_trade = getattr(self.trade_logs_repository, 'has_open_trade', None)
+        if callable(has_open_trade) and has_open_trade(position.id):
+            return
+
+        entry_order = self.orders_repository.find_latest_entry_for_position(position.id)
+        entry_price = position.avg_entry_price or getattr(entry_order, 'price', None) or position.current_price or 0.0
+        entry_qty = int(getattr(order, 'qty', 0) or 0) or int(getattr(position, 'qty', 0) or 0)
+        entry_at = position.opened_at
+        if not entry_at and entry_order is not None:
+            entry_at = getattr(entry_order, 'updated_at', None) or getattr(entry_order, 'created_at', None)
+
+        if entry_order is None:
+            return
+        if entry_qty <= 0 or float(entry_price) <= 0:
+            return
+
+        self.trade_logs_repository.create_entry_snapshot(
+            position=position,
+            order=entry_order,
+            qty=entry_qty,
+            entry_price=float(entry_price),
+            entry_at=entry_at,
+        )
+        self._log_sync_event(
+            event_type='trade_entry_backfilled',
+            severity='INFO',
+            message='Backfilled missing trade entry before closing recovered sell order.',
+            payload={
+                'symbol': position.symbol,
+                'position_id': position.id,
+                'entry_order_id': entry_order.id,
+                'exit_order_id': getattr(order, 'id', None),
+            },
+        )
+
     def _notify_order_reconciled_without_fill(
         self,
         *,
@@ -576,6 +746,7 @@ class PortfolioService:
                 last_broker_update_at=now,
                 failure_reason="Reconciled from authoritative broker sync.",
             )
+            self._ensure_trade_entry_for_exit(local_position, latest_order)
             self.trade_logs_repository.close_trade(local_position, latest_order, latest_order.price or local_position.current_price or local_position.avg_entry_price)
             self._notify_order_reconciled_without_fill(
                 symbol=local_position.symbol,

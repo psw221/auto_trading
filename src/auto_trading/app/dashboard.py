@@ -61,6 +61,8 @@ class DailyReportSummary:
     latest_market_scan: dict[str, object]
     latest_market_data_refresh: dict[str, object]
     recent_market_data_failures: list[dict[str, object]]
+    eod_reconciled: bool
+    eod_reconcile_summary: dict[str, object]
 
 
 def build_dashboard_summary(
@@ -214,6 +216,8 @@ def build_daily_report_summary(
             latest_market_scan={},
             latest_market_data_refresh={},
             recent_market_data_failures=[],
+            eod_reconciled=False,
+            eod_reconcile_summary={},
         )
 
     connection = sqlite3.connect(db_path)
@@ -243,6 +247,7 @@ def build_daily_report_summary(
         latest_market_scan = _fetch_latest_market_scan(connection)
         latest_market_data_refresh = _fetch_latest_market_data_refresh(connection)
         recent_market_data_failures = _fetch_recent_market_data_failures(connection)
+        eod_reconcile_summary = _fetch_latest_eod_reconcile(connection, report_date=report_date)
     finally:
         connection.close()
 
@@ -270,6 +275,8 @@ def build_daily_report_summary(
         latest_market_scan=latest_market_scan,
         latest_market_data_refresh=latest_market_data_refresh,
         recent_market_data_failures=recent_market_data_failures,
+        eod_reconciled=bool(eod_reconcile_summary),
+        eod_reconcile_summary=eod_reconcile_summary,
     )
 
 
@@ -284,6 +291,7 @@ def format_daily_report_summary(summary: DailyReportSummary) -> str:
         f'거래 종목: {", ".join(summary.traded_symbols) if summary.traded_symbols else "없음"}',
         f'주문 이상: {summary.order_issue_count}건',
         f'에러 이벤트: {len(summary.error_events)}건',
+        f"EOD 보정: {_format_eod_reconcile_status(summary)}",
         '',
         '[성과]',
         f'실현손익: {_format_signed_number(summary.realized_pnl)}원',
@@ -700,6 +708,26 @@ def _format_missed_entry_reason(reason_code: str, detail: str) -> str:
     return label
 
 
+def _fetch_latest_eod_reconcile(connection: sqlite3.Connection, *, report_date: str) -> dict[str, object]:
+    rows = _fetch_rows(
+        connection,
+        """
+        SELECT payload_json, occurred_at
+        FROM system_events
+        WHERE event_type = 'eod_reconcile_completed'
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 20
+        """,
+    )
+    for row in rows:
+        payload = _parse_metadata(row.get('payload_json'))
+        payload_report_date = str(payload.get('report_date') or '').strip()
+        if payload_report_date == report_date:
+            payload['occurred_at'] = str(row.get('occurred_at') or '')
+            return payload
+    return {}
+
+
 def _fetch_today_closed_trades(
     connection: sqlite3.Connection,
     *,
@@ -916,6 +944,18 @@ def _format_exit_reason(value: object) -> str:
         'EXIT': '일반 청산',
     }
     return mapping.get(reason, str(value or '').strip() or '-')
+
+
+def _format_eod_reconcile_status(summary: DailyReportSummary) -> str:
+    if not summary.eod_reconciled:
+        return '미확인'
+    occurred_at = str(summary.eod_reconcile_summary.get('occurred_at') or '').strip()
+    fills = int(summary.eod_reconcile_summary.get('fills_backfilled_count') or 0)
+    trade_logs = int(summary.eod_reconcile_summary.get('trade_logs_backfilled_count') or 0)
+    detail = f'완료 (fills={fills}, trade_logs={trade_logs})'
+    if occurred_at:
+        return f'{detail} @ {occurred_at}'
+    return detail
 
 
 def _format_signed_number(value: object) -> str:

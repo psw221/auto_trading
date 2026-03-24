@@ -717,6 +717,184 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertFalse(result['applied'])
         self.assertEqual('unstable_broker_positions', result['aborted_reason'])
 
+
+    def test_reconcile_eod_daily_fills_backfills_missing_sell_trade_log_from_actual_fill(self) -> None:
+        db_path = Path("data/test_fixture_eod_reconcile_sell_fill.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+
+        class _EODFillClient(KISClientStub):
+            def get_positions(self):
+                return []
+
+            def get_daily_fills(self):
+                return [
+                    BrokerFillSnapshot(
+                        order_no='SELL-005930',
+                        symbol='005930',
+                        side='SELL',
+                        fill_qty=2,
+                        fill_price=72000.0,
+                        filled_at='2026-03-24T15:21:05+09:00',
+                    )
+                ]
+
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            _EODFillClient(),
+            system_events,
+        )
+
+        position = Position(symbol="005930", qty=2, status="OPEN", avg_entry_price=70000.0, current_price=71900.0, opened_at="2026-03-24T09:10:00+09:00")
+        positions.upsert(position)
+        buy = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='BUY',
+            qty=2,
+            order_type='LIMIT',
+            intent='ENTRY',
+            position_id=position.id,
+            broker_order_id='BUY-005930',
+            status='FILLED',
+            filled_qty=2,
+            remaining_qty=0,
+            price=70000.0,
+        )
+        orders.create(buy)
+        sell = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='SELL',
+            qty=2,
+            order_type='LIMIT',
+            intent='TAKE_PROFIT',
+            position_id=position.id,
+            broker_order_id='SELL-005930',
+            status='FILLED',
+            filled_qty=2,
+            remaining_qty=0,
+            price=71500.0,
+        )
+        orders.create(sell)
+        FillsRepository(db).create(
+            sell.id,
+            BrokerFillSnapshot(
+                order_no='SELL-005930',
+                symbol='005930',
+                side='SELL',
+                fill_qty=2,
+                fill_price=72000.0,
+                filled_at='2026-03-24T15:21:05+09:00',
+            ),
+        )
+
+        result = portfolio.reconcile_eod_daily_fills()
+
+        self.assertEqual(1, result['daily_fill_count'])
+        self.assertEqual(0, result['fills_backfilled_count'])
+        self.assertEqual(1, result['trade_logs_backfilled_count'])
+        saved_order = orders.find_by_id(sell.id)
+        self.assertIsNotNone(saved_order)
+        self.assertEqual('FILLED', saved_order.status)
+        restored = positions.find_by_id(position.id)
+        self.assertIsNotNone(restored)
+        self.assertEqual('CLOSED', restored.status)
+        self.assertEqual('2026-03-24T15:21:05+09:00', restored.closed_at)
+        with db.transaction() as connection:
+            fill_row = connection.execute(
+                "SELECT fill_price, filled_at FROM fills WHERE order_id = ? ORDER BY id DESC LIMIT 1",
+                (sell.id,),
+            ).fetchone()
+            trade_row = connection.execute(
+                "SELECT entry_order_id, exit_order_id, exit_price, net_pnl, exit_at FROM trade_logs WHERE position_id = ? ORDER BY id DESC LIMIT 1",
+                (position.id,),
+            ).fetchone()
+            event_row = connection.execute(
+                "SELECT payload_json FROM system_events WHERE event_type = 'eod_reconcile_completed' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNotNone(fill_row)
+        self.assertEqual(72000.0, fill_row['fill_price'])
+        self.assertEqual('2026-03-24T15:21:05+09:00', fill_row['filled_at'])
+        self.assertIsNotNone(trade_row)
+        self.assertEqual(buy.id, trade_row['entry_order_id'])
+        self.assertEqual(sell.id, trade_row['exit_order_id'])
+        self.assertEqual(72000.0, trade_row['exit_price'])
+        self.assertEqual(4000.0, trade_row['net_pnl'])
+        self.assertEqual('2026-03-24T15:21:05+09:00', trade_row['exit_at'])
+        self.assertIsNotNone(event_row)
+        self.assertIn('"trade_logs_backfilled_count": 1', event_row['payload_json'])
+
+    def test_backfill_missing_trade_log_exits_creates_missing_entry_and_close(self) -> None:
+        db_path = Path("data/test_fixture_trade_log_backfill.db")
+        if db_path.exists():
+            db_path.unlink()
+        db = Database(db_path)
+        db.initialize()
+        orders = OrdersRepository(db)
+        positions = PositionsRepository(db)
+        system_events = SystemEventsRepository(db)
+        portfolio = PortfolioService(
+            positions,
+            orders,
+            FillsRepository(db),
+            TradeLogsRepository(db),
+            KISClientStub(),
+            system_events,
+        )
+
+        position = Position(symbol="005930", qty=0, status="CLOSED", avg_entry_price=70000.0, current_price=71000.0, opened_at="2026-03-23T09:10:00+09:00", closed_at="2026-03-23T15:10:00+09:00", exit_reason="TAKE_PROFIT")
+        positions.upsert(position)
+        buy = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='BUY',
+            qty=2,
+            order_type='LIMIT',
+            intent='ENTRY',
+            position_id=position.id,
+            broker_order_id='BUY-005930',
+            status='FILLED',
+            filled_qty=2,
+            remaining_qty=0,
+            price=70000.0,
+        )
+        orders.create(buy)
+        sell = __import__('auto_trading.orders.models', fromlist=['Order']).Order(
+            symbol='005930',
+            side='SELL',
+            qty=2,
+            order_type='LIMIT',
+            intent='TAKE_PROFIT',
+            position_id=position.id,
+            broker_order_id='SELL-005930',
+            status='FILLED',
+            filled_qty=2,
+            remaining_qty=0,
+            price=71000.0,
+        )
+        orders.create(sell)
+
+        result = portfolio.backfill_missing_trade_log_exits()
+
+        self.assertEqual(1, len(result['backfilled']))
+        with db.transaction() as connection:
+            row = connection.execute(
+                "SELECT entry_order_id, exit_order_id, entry_price, exit_price, net_pnl FROM trade_logs WHERE position_id = ? ORDER BY id DESC LIMIT 1",
+                (position.id,),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(buy.id, row['entry_order_id'])
+        self.assertEqual(sell.id, row['exit_order_id'])
+        self.assertEqual(70000.0, row['entry_price'])
+        self.assertEqual(71000.0, row['exit_price'])
+        self.assertEqual(2000.0, row['net_pnl'])
+
     def test_websocket_client_parses_order_notice_fixture(self) -> None:
         client = KISWebSocketClient(build_settings(), KISClientStub())
         payload = json.loads((FIXTURES / "kis_order_notice.json").read_text(encoding="utf-8"))

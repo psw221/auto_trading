@@ -238,6 +238,42 @@ class OrdersRepository:
             return None
         return self._to_model(row)
 
+    def find_latest_entry_for_position(self, position_id: int) -> Order | None:
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM orders
+                WHERE position_id = ?
+                  AND side = 'BUY'
+                  AND status IN ('FILLED', 'UNKNOWN', 'SUBMITTED', 'ACKNOWLEDGED', 'PARTIALLY_FILLED')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (position_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_model(row)
+
+    def find_filled_exits_missing_trade_logs(self) -> list[Order]:
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.*
+                FROM orders o
+                WHERE o.side = 'SELL'
+                  AND o.status = 'FILLED'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM trade_logs tl
+                      WHERE tl.exit_order_id = o.id
+                  )
+                ORDER BY o.updated_at ASC, o.id ASC
+                """
+            ).fetchall()
+        return [self._to_model(row) for row in rows]
+
     def _to_model(self, row: object) -> Order:
         return Order(
             id=row["id"],

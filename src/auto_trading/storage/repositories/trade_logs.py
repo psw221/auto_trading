@@ -56,6 +56,42 @@ class TradeLogsRepository:
             ).fetchone()
         return row is not None
 
+    def create_entry_snapshot(
+        self,
+        *,
+        position: Position,
+        order: Order | None,
+        qty: int,
+        entry_price: float,
+        entry_at: str | None,
+    ) -> int:
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO trade_logs (
+                    position_id,
+                    symbol,
+                    strategy_name,
+                    entry_order_id,
+                    entry_price,
+                    qty,
+                    entry_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    position.id,
+                    position.symbol,
+                    position.strategy_name,
+                    order.id if order is not None else None,
+                    entry_price,
+                    qty,
+                    entry_at,
+                    utc_now().isoformat(),
+                ),
+            )
+        return int(cursor.lastrowid)
+
     def close_trade(self, position: Position, order: Order, exit_price: float) -> None:
         with self.db.transaction() as connection:
             row = connection.execute(
@@ -63,6 +99,7 @@ class TradeLogsRepository:
                 SELECT id, entry_price, qty
                 FROM trade_logs
                 WHERE position_id = ?
+                  AND exit_at IS NULL
                 ORDER BY id DESC
                 LIMIT 1
                 """,

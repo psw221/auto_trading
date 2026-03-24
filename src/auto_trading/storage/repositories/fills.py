@@ -69,3 +69,19 @@ class FillsRepository:
         if row is None:
             return None
         return int(row["id"])
+
+    def find_latest_for_order(self, order_id: int) -> dict[str, object] | None:
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT id, broker_fill_id, symbol, side, fill_price, fill_qty, fill_amount, filled_at, created_at
+                FROM fills
+                WHERE order_id = ?
+                ORDER BY filled_at DESC, id DESC
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
