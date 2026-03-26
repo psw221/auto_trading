@@ -7,9 +7,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib import error, parse, request
 
-import certifi
+try:
+    import certifi
+except ModuleNotFoundError:
+    certifi = None
 
 from auto_trading.config.schema import Settings
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    if certifi is not None:
+        return ssl.create_default_context(cafile=certifi.where())
+    return ssl.create_default_context()
 
 
 @dataclass(slots=True)
@@ -17,7 +26,7 @@ class TelegramNotifier:
     settings: Settings
     system_events_repository: object
     timeout: float = 5.0
-    ssl_context: ssl.SSLContext = field(default_factory=lambda: ssl.create_default_context(cafile=certifi.where()))
+    ssl_context: ssl.SSLContext = field(default_factory=lambda: _build_ssl_context())
     _symbol_name_cache: dict[str, str] = field(default_factory=dict)
     _symbol_name_cache_loaded: bool = False
 
@@ -312,3 +321,4 @@ class TelegramNotifier:
             return f"{int(float(str(value))):,}"
         except (TypeError, ValueError):
             return str(value).strip()
+

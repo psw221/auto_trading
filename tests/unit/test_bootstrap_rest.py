@@ -130,6 +130,7 @@ class BootstrapRestValidationTest(unittest.TestCase):
         self.assertEqual(0, result['refreshed_count'])
         self.assertEqual(1, result['failed_count'])
         self.assertEqual(['005930'], result['failed_symbols'])
+        self.assertEqual([{'symbol': '005930', 'reason': 'INSUFFICIENT_BARS', 'error': 'Broker daily bars missing or insufficient for 005930. bars=0'}], result['failed_details'])
         self.assertEqual(30, len(collector.get_recent_bars('005930', 30)))
         self.assertEqual(71000.0, collector.get_latest_snapshot('005930').price)
         status = collector.cache.get_refresh_status('005930')
@@ -152,4 +153,6 @@ class BootstrapRestValidationTest(unittest.TestCase):
         self.assertEqual(0, result['refreshed_count'])
         self.assertEqual(1, result['failed_count'])
         self.assertEqual(['005930'], result['failed_symbols'])
+        self.assertEqual([{'symbol': '005930', 'reason': 'BAD_PRICE', 'error': 'Broker current price missing or zero for 005930.'}], result['failed_details'])
         self.assertEqual([], collector.get_recent_bars('005930', 30))
+

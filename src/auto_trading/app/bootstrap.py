@@ -184,6 +184,7 @@ def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISCl
     refreshed_count = 0
     skipped_count = 0
     failed_symbols: list[str] = []
+    failed_details: list[dict[str, str]] = []
     skipped_symbols: list[str] = []
     priority_seen = set(priority_symbols)
 
@@ -217,8 +218,14 @@ def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISCl
             market_data_collector.set_rest_market_data(symbol, snapshot, bars, refreshed_at=now)
             refreshed_count += 1
         except Exception as exc:
-            market_data_collector.record_refresh_failure(symbol, str(exc), occurred_at=now)
+            message = str(exc)
+            market_data_collector.record_refresh_failure(symbol, message, occurred_at=now)
             failed_symbols.append(symbol)
+            failed_details.append({
+                'symbol': symbol,
+                'reason': _classify_market_data_refresh_failure(exc),
+                'error': message,
+            })
     return {
         'requested_count': len(requested_symbols),
         'attempted_count': attempted_count,
@@ -226,6 +233,7 @@ def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISCl
         'skipped_count': skipped_count,
         'failed_count': len(failed_symbols),
         'failed_symbols': failed_symbols[:10],
+        'failed_details': failed_details[:10],
         'skipped_symbols': skipped_symbols[:10],
         'priority_count': len(priority_symbols),
     }
@@ -267,3 +275,20 @@ def _build_validated_rest_market_data(
         turnover=latest_turnover,
     )
     return snapshot, bars
+
+def _classify_market_data_refresh_failure(exc: Exception) -> str:
+    message = str(exc).lower()
+    if 'current price missing or zero' in message:
+        return 'BAD_PRICE'
+    if 'daily bars missing or insufficient' in message:
+        return 'INSUFFICIENT_BARS'
+    return 'ERROR'
+
+def _classify_market_data_refresh_failure(exc: Exception) -> str:
+    message = str(exc).lower()
+    if 'current price missing or zero' in message:
+        return 'BAD_PRICE'
+    if 'daily bars missing or insufficient' in message:
+        return 'INSUFFICIENT_BARS'
+    return 'ERROR'
+
