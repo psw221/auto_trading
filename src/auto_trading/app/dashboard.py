@@ -670,6 +670,8 @@ def _map_missed_entry_reason(event_type: str, payload: dict[str, object]) -> str
         reason = str(payload.get('reason', '')).strip().lower()
         if reason == 'max_positions':
             return 'max_positions'
+        if reason == 'stale_market_data':
+            return 'stale_market_data'
         if reason == 'position_sync_unstable':
             return 'position_sync_unstable'
         if reason == 'recent_ma5_breakdown_exit':
@@ -691,10 +693,11 @@ def _missed_entry_priority(reason_code: str) -> int:
         'order_rejected': 1,
         'order_unknown': 2,
         'failsafe_blocked': 3,
-        'recent_ma5_breakdown_exit': 4,
-        'position_sync_unstable': 5,
-        'already_holding': 6,
-        'max_positions': 7,
+        'stale_market_data': 4,
+        'recent_ma5_breakdown_exit': 5,
+        'position_sync_unstable': 6,
+        'already_holding': 7,
+        'max_positions': 8,
     }
     return priority.get(reason_code, 999)
 
@@ -703,6 +706,7 @@ def _format_missed_entry_reason(reason_code: str, detail: str) -> str:
     labels = {
         'max_positions': '보유 종목 수 한도 도달',
         'failsafe_blocked': 'Fail-safe 차단 상태',
+        'stale_market_data': '시세 데이터 stale로 진입 제한',
         'position_sync_unstable': '포지션 동기화 불안정으로 진입 제한',
         'already_holding': '이미 보유 중인 종목',
         'recent_ma5_breakdown_exit': '당일 5일선 이탈 청산 종목 재진입 제한',
@@ -1040,6 +1044,7 @@ def _format_rows(rows: list[dict[str, object]], fields: tuple[str, ...]) -> list
         parts = [f"{field}={row.get(field)}" for field in fields]
         formatted.append(" | ".join(parts))
     return formatted
+
 
 
 

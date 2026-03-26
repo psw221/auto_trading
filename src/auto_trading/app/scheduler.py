@@ -413,11 +413,33 @@ class SchedulerService:
         symbol = str(getattr(signal, 'symbol', '') or '').strip()
         if not symbol:
             return ''
+        if self._has_stale_market_data_for_symbol(symbol):
+            return 'stale_market_data'
         if self._has_recent_position_mismatch_for_symbol(symbol):
             return 'position_sync_unstable'
         if self._has_same_day_ma5_breakdown_exit(symbol):
             return 'recent_ma5_breakdown_exit'
         return ''
+
+    def _has_stale_market_data_for_symbol(self, symbol: str) -> bool:
+        if not symbol:
+            return False
+        cache = getattr(self.market_data_collector, 'cache', None)
+        if cache is None:
+            return True
+        get_refresh_status = getattr(cache, 'get_refresh_status', None)
+        if not callable(get_refresh_status):
+            return True
+        try:
+            refresh_status = get_refresh_status(symbol)
+        except Exception:
+            return True
+        if refresh_status is None:
+            return True
+        refreshed_at = str(getattr(refresh_status, 'last_success_at', '') or '').strip()
+        if not refreshed_at:
+            return True
+        return self._is_market_data_stale(refreshed_at)
 
     def _has_recent_position_mismatch_for_symbol(self, symbol: str) -> bool:
         if self.system_events_repository is None or not symbol:
@@ -597,18 +619,8 @@ class SchedulerService:
             message=message,
             payload=summary,
         )
-        try:
-            self.notifier.send_system_event(
-                {
-                    'severity': 'WARN',
-                    'component': 'market_data',
-                    'message': message,
-                }
-            )
-            self._last_market_data_alert_signature = signature
-            self._last_market_data_alert_at = now
-        except Exception:
-            return
+        self._last_market_data_alert_signature = signature
+        self._last_market_data_alert_at = now
 
     def _record_market_scan_summary(
         self,
@@ -663,7 +675,10 @@ class SchedulerService:
         if self.notifier is None or not candidates:
             return
         excluded = {symbol for symbol in (excluded_symbols or set()) if symbol}
-        eligible = [item for item in candidates if getattr(item, 'symbol', '') not in excluded]
+        eligible = [
+            item for item in candidates
+            if getattr(item, 'symbol', '') not in excluded and self._is_target_alert_eligible(item)
+        ]
         if not eligible:
             self._last_target_scores_signature = tuple()
             return
@@ -680,6 +695,7 @@ class SchedulerService:
                             "symbol": item.symbol,
                             "score_total": item.score_total,
                             "price": item.price,
+                            "ma5": getattr(item, 'ma5', 0.0),
                         }
                         for item in ranked
                     ],
@@ -688,6 +704,14 @@ class SchedulerService:
             self._last_target_scores_signature = signature
         except Exception:
             return
+
+    @staticmethod
+    def _is_target_alert_eligible(item: object) -> bool:
+        ma5 = float(getattr(item, 'ma5', 0.0) or 0.0)
+        if ma5 <= 0.0:
+            return True
+        price = float(getattr(item, 'price', 0.0) or 0.0)
+        return price >= ma5
 
     @staticmethod
     def _is_pre_market(now: datetime) -> bool:
@@ -700,3 +724,4 @@ class SchedulerService:
     @staticmethod
     def _is_post_market(now: datetime) -> bool:
         return time(15, 20) <= now.time() < time(16, 0)
+

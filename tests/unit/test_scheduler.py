@@ -223,6 +223,9 @@ class _StubSystemEventsRepository:
 
 
 class SchedulerTargetsTest(unittest.TestCase):
+    def _fresh_status(self, timestamp: str = '2999-03-19T06:00:00+00:00') -> object:
+        return type('RefreshStatus', (), {'last_success_at': timestamp, 'last_failure_at': '', 'source': 'REST'})()
+
     def _calendar(self) -> TradingCalendar:
         return TradingCalendar(Path('data/krx_holidays.csv'))
 
@@ -238,7 +241,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         universe_builder = _StubUniverseBuilder(symbols=list(scores.keys()))
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -264,6 +267,29 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(101, notifier.payloads[-1]['items'][0]['score_total'])
         self.assertEqual(0, universe_builder.rebuild_count)
         self.assertEqual(0, universe_builder.load_current_count)
+
+    def test_run_market_scan_excludes_price_below_ma5_from_target_alerts(self) -> None:
+        scores = {
+            '000000': StrategyScore(symbol='000000', score_total=100, price=90.0, ma5=100.0),
+            '000001': StrategyScore(symbol='000001', score_total=95, price=110.0, ma5=100.0),
+        }
+        notifier = _StubNotifier()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(1, len(notifier.payloads))
+        self.assertEqual(['000001'], [item['symbol'] for item in notifier.payloads[0]['items']])
 
     def test_run_market_scan_cools_down_exit_when_open_sell_order_exists(self) -> None:
         scores = self._build_scores()
@@ -309,7 +335,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         )
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=portfolio_service,
@@ -333,7 +359,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         )
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=portfolio_service,
@@ -355,7 +381,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         universe_builder = _StubUniverseBuilder(symbols=[], current_items=current_items)
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -383,7 +409,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         )
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=portfolio_service,
@@ -410,7 +436,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         )
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=portfolio_service,
@@ -434,7 +460,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         universe_builder = _StubUniverseBuilder(symbols=[])
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -464,7 +490,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         system_events_repository = _StubSystemEventsRepository()
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -648,7 +674,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         order_engine = _StubOrderEngine()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(),
@@ -667,6 +693,39 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(1, len(skipped_events))
         self.assertEqual('000000', skipped_events[0]['payload']['symbol'])
         self.assertEqual('max_positions', skipped_events[0]['payload']['reason'])
+        self.assertEqual(0, len(order_engine.entries))
+
+    def test_run_market_scan_blocks_entry_when_market_data_is_stale(self) -> None:
+        scores = self._build_scores()
+        signal_engine = _StubSignalEngine(
+            entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
+        )
+        system_events_repository = _StubSystemEventsRepository()
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=_StubCollector(
+                scores=scores,
+                refresh_statuses={'000000': self._fresh_status('2026-03-19T00:00:00+00:00')},
+            ),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(enter_allowed=True, enter_reason='ok'),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            market_data_stale_after_seconds=120,
+        )
+        scheduler.run_market_scan()
+        skipped_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'entry_skipped'
+        ]
+        self.assertEqual(1, len(skipped_events))
+        self.assertEqual('stale_market_data', skipped_events[0]['payload']['reason'])
         self.assertEqual(0, len(order_engine.entries))
 
     def test_run_market_scan_blocks_entry_when_same_symbol_position_sync_is_unstable(self) -> None:
@@ -688,7 +747,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         order_engine = _StubOrderEngine()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(),
@@ -728,7 +787,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         order_engine = _StubOrderEngine()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(),
@@ -763,7 +822,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         system_events_repository = _StubSystemEventsRepository()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(),
@@ -792,7 +851,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         order_engine = _StubOrderEngine(entry_error='Active position already exists for 004000.')
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'004000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(),
@@ -845,7 +904,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         order_engine = _StubOrderEngine()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=portfolio_service,
@@ -906,7 +965,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         refreshed: list[list[str]] = []
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -959,8 +1018,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             market_data_refresher=lambda request: {'attempted_count': 3, 'skipped_count': 0, 'priority_count': 1},
         )
         scheduler.run_market_scan()
-        self.assertEqual(1, len(notifier.system_events))
-        self.assertIn('REST refresh failed=1', notifier.system_events[0]['message'])
+        self.assertEqual(0, len(notifier.system_events))
         degraded_events = [
             event for event in system_events_repository.events
             if event['event_type'] == 'market_data_refresh_degraded'
@@ -1018,7 +1076,7 @@ class SchedulerTargetsTest(unittest.TestCase):
 
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
-            market_data_collector=_StubCollector(scores=scores),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -1041,3 +1099,6 @@ class SchedulerTargetsTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+
