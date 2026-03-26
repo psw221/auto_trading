@@ -213,34 +213,7 @@ def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISCl
         try:
             current = kis_client.get_current_price(symbol)
             history = kis_client.get_daily_bars(symbol, lookback_days=30)
-            bars = [
-                Bar(
-                    symbol=symbol,
-                    open=float(item.get('open') or 0.0),
-                    high=float(item.get('high') or 0.0),
-                    low=float(item.get('low') or 0.0),
-                    close=float(item.get('close') or 0.0),
-                    volume=float(item.get('volume') or 0.0),
-                    turnover=float(item.get('turnover') or 0.0),
-                )
-                for item in reversed(history)
-                if float(item.get('close') or 0.0) > 0
-            ]
-            latest_price = float(current.get('price') or 0.0)
-            if bars and latest_price > 0:
-                latest_bar = bars[-1]
-                latest_bar.close = latest_price
-                latest_bar.high = max(latest_bar.high, latest_price) if latest_bar.high else latest_price
-                if latest_bar.low > 0:
-                    latest_bar.low = min(latest_bar.low, latest_price)
-                else:
-                    latest_bar.low = latest_price
-                latest_bar.turnover = float(current.get('turnover') or latest_bar.turnover)
-            snapshot = MarketSnapshot(
-                symbol=symbol,
-                price=latest_price if latest_price > 0 else (bars[-1].close if bars else 0.0),
-                turnover=float(current.get('turnover') or 0.0),
-            )
+            snapshot, bars = _build_validated_rest_market_data(symbol, current=current, history=history)
             market_data_collector.set_rest_market_data(symbol, snapshot, bars, refreshed_at=now)
             refreshed_count += 1
         except Exception as exc:
@@ -256,3 +229,41 @@ def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISCl
         'skipped_symbols': skipped_symbols[:10],
         'priority_count': len(priority_symbols),
     }
+
+
+def _build_validated_rest_market_data(
+    symbol: str,
+    *,
+    current: dict[str, object],
+    history: list[dict[str, object]],
+) -> tuple[MarketSnapshot, list[Bar]]:
+    latest_price = float(current.get('price') or 0.0)
+    latest_turnover = float(current.get('turnover') or 0.0)
+    if latest_price <= 0.0:
+        raise ValueError(f'Broker current price missing or zero for {symbol}.')
+    bars = [
+        Bar(
+            symbol=symbol,
+            open=float(item.get('open') or 0.0),
+            high=float(item.get('high') or 0.0),
+            low=float(item.get('low') or 0.0),
+            close=float(item.get('close') or 0.0),
+            volume=float(item.get('volume') or 0.0),
+            turnover=float(item.get('turnover') or 0.0),
+        )
+        for item in reversed(history)
+        if float(item.get('close') or 0.0) > 0
+    ]
+    if len(bars) < 20:
+        raise ValueError(f'Broker daily bars missing or insufficient for {symbol}. bars={len(bars)}')
+    latest_bar = bars[-1]
+    latest_bar.close = latest_price
+    latest_bar.high = max(latest_bar.high, latest_price) if latest_bar.high else latest_price
+    latest_bar.low = min(latest_bar.low, latest_price) if latest_bar.low > 0 else latest_price
+    latest_bar.turnover = latest_turnover or latest_bar.turnover
+    snapshot = MarketSnapshot(
+        symbol=symbol,
+        price=latest_price,
+        turnover=latest_turnover,
+    )
+    return snapshot, bars
