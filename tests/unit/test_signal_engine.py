@@ -4,8 +4,24 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from auto_trading.portfolio.models import Position
-from auto_trading.strategy.models import MarketSnapshot
+from auto_trading.strategy.models import MarketSnapshot, StrategyScore
 from auto_trading.strategy.signals import SignalEngine
+
+
+class SignalEngineEntryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = SignalEngine()
+
+    def test_entry_allows_candidate_when_price_is_at_ma5(self) -> None:
+        candidates = [StrategyScore(symbol="005930", score_total=70, price=100.0, ma5=100.0)]
+        signals = self.engine.evaluate_entry(candidates)
+        self.assertEqual(1, len(signals))
+        self.assertEqual("005930", signals[0].symbol)
+
+    def test_entry_blocks_candidate_when_price_is_below_ma5(self) -> None:
+        candidates = [StrategyScore(symbol="005930", score_total=90, price=99.0, ma5=100.0)]
+        signals = self.engine.evaluate_entry(candidates)
+        self.assertEqual([], signals)
 
 
 class SignalEngineExitTest(unittest.TestCase):
@@ -83,3 +99,4 @@ class SignalEngineExitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

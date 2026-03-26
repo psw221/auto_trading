@@ -10,7 +10,11 @@ from auto_trading.strategy.models import EntrySignal, ExitSignal, MarketSnapshot
 @dataclass(slots=True)
 class SignalEngine:
     def evaluate_entry(self, candidates: list[StrategyScore]) -> list[EntrySignal]:
-        qualified = [item for item in candidates if item.score_total >= 70]
+        qualified = [
+            item
+            for item in candidates
+            if item.score_total >= 70 and self._passes_entry_trend_filter(item)
+        ]
         qualified.sort(key=lambda item: item.score_total, reverse=True)
         return [EntrySignal(symbol=item.symbol, score_total=item.score_total, price=item.price) for item in qualified]
 
@@ -89,3 +93,9 @@ class SignalEngine:
                 parsed = parsed.replace(tzinfo=timezone.utc)
             return parsed
         return None
+
+    @staticmethod
+    def _passes_entry_trend_filter(score: StrategyScore) -> bool:
+        if score.ma5 <= 0:
+            return True
+        return score.price >= score.ma5
