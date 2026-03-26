@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from auto_trading.app.scheduler import SchedulerService
@@ -225,6 +226,9 @@ class _StubSystemEventsRepository:
 class SchedulerTargetsTest(unittest.TestCase):
     def _fresh_status(self, timestamp: str = '2999-03-19T06:00:00+00:00') -> object:
         return type('RefreshStatus', (), {'last_success_at': timestamp, 'last_failure_at': '', 'source': 'REST'})()
+
+    def _utc_iso_now(self, *, minutes_offset: int = 0, seconds_offset: int = 0) -> str:
+        return (datetime.now(timezone.utc) + timedelta(minutes=minutes_offset, seconds=seconds_offset)).isoformat()
 
     def _calendar(self) -> TradingCalendar:
         return TradingCalendar(Path('data/krx_holidays.csv'))
@@ -807,18 +811,23 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(0, len(skipped_events))
         self.assertEqual(1, len(order_engine.entries))
 
-    def test_run_market_scan_blocks_same_day_reentry_after_ma5_breakdown_exit(self) -> None:
+    def test_run_market_scan_blocks_reentry_during_ma5_breakdown_cooldown(self) -> None:
         scores = self._build_scores()
         signal_engine = _StubSignalEngine(
             entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
         )
-        order_engine = _StubOrderEngine(
-            orders_repository=type(
-                'OrdersRepo',
-                (),
-                {'has_filled_exit_intent_for_symbol_today': staticmethod(lambda symbol, intent: symbol == '000000' and intent == 'MA5_BREAKDOWN')},
-            )(),
-        )
+
+        class _OrdersRepo:
+            def has_filled_exit_intent_for_symbol_today(self, symbol, intent):
+                return symbol == '000000' and intent == 'MA5_BREAKDOWN'
+
+            def find_latest_filled_exit_intent_at(self, symbol, intent):
+                if symbol == '000000' and intent == 'MA5_BREAKDOWN':
+                    return self_ref._utc_iso_now(minutes_offset=-10)
+                return ''
+
+        self_ref = self
+        order_engine = _StubOrderEngine(orders_repository=_OrdersRepo())
         system_events_repository = _StubSystemEventsRepository()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000']),
@@ -832,6 +841,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
             system_events_repository=system_events_repository,
+            ma5_reentry_cooldown_seconds=2700,
         )
         scheduler.run_market_scan()
         skipped_events = [
@@ -841,6 +851,97 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual(1, len(skipped_events))
         self.assertEqual('recent_ma5_breakdown_exit', skipped_events[0]['payload']['reason'])
         self.assertEqual(0, len(order_engine.entries))
+
+    def test_run_market_scan_blocks_reentry_until_ma5_recovery_is_confirmed_twice(self) -> None:
+        scores = {
+            '000000': StrategyScore(symbol='000000', score_total=100, price=1000.0, ma5=990.0),
+        }
+        signal_engine = _StubSignalEngine(
+            entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
+        )
+
+        latest_exit_at = self._utc_iso_now(minutes_offset=-50)
+
+        class _OrdersRepo:
+            def has_filled_exit_intent_for_symbol_today(self, symbol, intent):
+                return symbol == '000000' and intent == 'MA5_BREAKDOWN'
+
+            def find_latest_filled_exit_intent_at(self, symbol, intent):
+                if symbol == '000000' and intent == 'MA5_BREAKDOWN':
+                    return latest_exit_at
+                return ''
+
+        order_engine = _StubOrderEngine(orders_repository=_OrdersRepo())
+        system_events_repository = _StubSystemEventsRepository()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(enter_allowed=True, enter_reason='ok'),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            ma5_reentry_cooldown_seconds=2700,
+            ma5_reentry_recovery_confirmations=2,
+        )
+        scheduler.run_market_scan()
+        skipped_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'entry_skipped'
+        ]
+        self.assertEqual(1, len(skipped_events))
+        self.assertEqual('ma5_recovery_unconfirmed', skipped_events[0]['payload']['reason'])
+        self.assertEqual(0, len(order_engine.entries))
+
+    def test_run_market_scan_allows_reentry_after_cooldown_and_second_ma5_recovery_confirmation(self) -> None:
+        scores = {
+            '000000': StrategyScore(symbol='000000', score_total=100, price=1000.0, ma5=990.0),
+        }
+        signal_engine = _StubSignalEngine(
+            entry_signals=[type('EntrySignal', (), {'symbol': '000000', 'score_total': 100, 'price': 1000.0})()]
+        )
+
+        latest_exit_at = self._utc_iso_now(minutes_offset=-50)
+
+        class _OrdersRepo:
+            def has_filled_exit_intent_for_symbol_today(self, symbol, intent):
+                return symbol == '000000' and intent == 'MA5_BREAKDOWN'
+
+            def find_latest_filled_exit_intent_at(self, symbol, intent):
+                if symbol == '000000' and intent == 'MA5_BREAKDOWN':
+                    return latest_exit_at
+                return ''
+
+        order_engine = _StubOrderEngine(orders_repository=_OrdersRepo())
+        system_events_repository = _StubSystemEventsRepository()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(enter_allowed=True, enter_reason='ok'),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            ma5_reentry_cooldown_seconds=2700,
+            ma5_reentry_recovery_confirmations=2,
+        )
+        scheduler.run_market_scan()
+        scheduler.run_market_scan()
+        skipped_events = [
+            event for event in system_events_repository.events
+            if event['event_type'] == 'entry_skipped'
+        ]
+        self.assertEqual(1, len(skipped_events))
+        self.assertEqual('ma5_recovery_unconfirmed', skipped_events[0]['payload']['reason'])
+        self.assertEqual(1, len(order_engine.entries))
 
     def test_run_market_scan_records_entry_submit_failure_without_crashing(self) -> None:
         scores = self._build_scores()

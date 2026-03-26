@@ -676,6 +676,8 @@ def _map_missed_entry_reason(event_type: str, payload: dict[str, object]) -> str
             return 'position_sync_unstable'
         if reason == 'recent_ma5_breakdown_exit':
             return 'recent_ma5_breakdown_exit'
+        if reason == 'ma5_recovery_unconfirmed':
+            return 'ma5_recovery_unconfirmed'
         return ''
     if normalized == 'order_blocked':
         return 'failsafe_blocked'
@@ -695,9 +697,10 @@ def _missed_entry_priority(reason_code: str) -> int:
         'failsafe_blocked': 3,
         'stale_market_data': 4,
         'recent_ma5_breakdown_exit': 5,
-        'position_sync_unstable': 6,
-        'already_holding': 7,
-        'max_positions': 8,
+        'ma5_recovery_unconfirmed': 6,
+        'position_sync_unstable': 7,
+        'already_holding': 8,
+        'max_positions': 9,
     }
     return priority.get(reason_code, 999)
 
@@ -709,7 +712,8 @@ def _format_missed_entry_reason(reason_code: str, detail: str) -> str:
         'stale_market_data': '시세 데이터 stale로 진입 제한',
         'position_sync_unstable': '포지션 동기화 불안정으로 진입 제한',
         'already_holding': '이미 보유 중인 종목',
-        'recent_ma5_breakdown_exit': '당일 5일선 이탈 청산 종목 재진입 제한',
+        'recent_ma5_breakdown_exit': '5일선 이탈 청산 후 45분 재진입 제한',
+        'ma5_recovery_unconfirmed': '5일선 회복 2회 확인 전 재진입 제한',
         'order_rejected': '주문 거절',
         'order_unknown': '주문 상태 미확정',
     }

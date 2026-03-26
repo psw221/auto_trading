@@ -189,6 +189,39 @@ class OrdersRepository:
                     return True
         return False
 
+    def find_latest_filled_exit_intent_at(self, symbol: str, intent: str) -> str:
+        if not symbol or not intent:
+            return ''
+        latest: datetime | None = None
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT updated_at, last_broker_update_at
+                FROM orders
+                WHERE symbol = ?
+                  AND side = 'SELL'
+                  AND status = 'FILLED'
+                  AND intent = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 50
+                """,
+                (symbol, intent),
+            ).fetchall()
+        for row in rows:
+            for key in ('last_broker_update_at', 'updated_at'):
+                raw = str(row[key] or '').strip()
+                if not raw:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(raw)
+                except ValueError:
+                    continue
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                if latest is None or parsed > latest:
+                    latest = parsed
+        return latest.isoformat() if latest is not None else ''
+
     def find_stale_unknown_orders(self, *, older_than_seconds: int) -> list[Order]:
         if older_than_seconds <= 0:
             return []

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from time import sleep
 
 from auto_trading.common.trading_calendar import TradingCalendar
@@ -40,6 +40,8 @@ class SchedulerService:
     universe_refresh_interval_seconds: int = 90
     entry_pause_after_position_mismatch_seconds: int = 180
     exit_retry_cooldown_seconds: int = 180
+    ma5_reentry_cooldown_seconds: int = 2700
+    ma5_reentry_recovery_confirmations: int = 2
     loop_sleep_seconds: float = 1.0
     _last_pre_market_run_date: str | None = field(init=False, default=None)
     _last_post_market_run_date: str | None = field(init=False, default=None)
@@ -47,6 +49,8 @@ class SchedulerService:
     _last_target_scores_signature: tuple[tuple[str, int, float], ...] = field(init=False, default_factory=tuple)
     _last_market_data_alert_signature: tuple[tuple[str, ...], tuple[str, ...]] = field(init=False, default_factory=tuple)
     _last_market_data_alert_at: datetime | None = field(init=False, default=None)
+    _ma5_reentry_recovery_streaks: dict[str, int] = field(init=False, default_factory=dict)
+    _ma5_reentry_anchor_at: dict[str, str] = field(init=False, default_factory=dict)
 
     def run_forever(self) -> None:
         while True:
@@ -132,6 +136,8 @@ class SchedulerService:
                 qualified_count += 1
                 self._save_strategy_snapshot(score)
             candidates.append(score)
+        self._refresh_ma5_reentry_state(candidates)
+        self._update_ma5_reentry_recovery_streaks(candidates)
         self._record_market_scan_summary(
             universe_count=len(self.universe_builder.symbols),
             scored_count=scored_count,
@@ -417,8 +423,9 @@ class SchedulerService:
             return 'stale_market_data'
         if self._has_recent_position_mismatch_for_symbol(symbol):
             return 'position_sync_unstable'
-        if self._has_same_day_ma5_breakdown_exit(symbol):
-            return 'recent_ma5_breakdown_exit'
+        ma5_reentry_reason = self._get_ma5_breakdown_reentry_guard_reason(symbol)
+        if ma5_reentry_reason:
+            return ma5_reentry_reason
         return ''
 
     def _has_stale_market_data_for_symbol(self, symbol: str) -> bool:
@@ -469,17 +476,97 @@ class SchedulerService:
         except Exception:
             return False
 
-    def _has_same_day_ma5_breakdown_exit(self, symbol: str) -> bool:
+    def _get_ma5_breakdown_reentry_guard_reason(self, symbol: str) -> str:
         orders_repository = getattr(self.order_engine, 'orders_repository', None)
         if orders_repository is None or not symbol:
-            return False
+            return ''
         checker = getattr(orders_repository, 'has_filled_exit_intent_for_symbol_today', None)
+        latest_finder = getattr(orders_repository, 'find_latest_filled_exit_intent_at', None)
         if not callable(checker):
-            return False
+            return ''
         try:
-            return bool(checker(symbol, 'MA5_BREAKDOWN'))
+            has_same_day_exit = bool(checker(symbol, 'MA5_BREAKDOWN'))
         except Exception:
-            return False
+            return ''
+        if not has_same_day_exit:
+            self._ma5_reentry_recovery_streaks.pop(symbol, None)
+            self._ma5_reentry_anchor_at.pop(symbol, None)
+            return ''
+        latest_exit_at = self._ma5_reentry_anchor_at.get(symbol, '')
+        if not latest_exit_at and callable(latest_finder):
+            try:
+                latest_exit_at = str(latest_finder(symbol, 'MA5_BREAKDOWN') or '').strip()
+            except Exception:
+                latest_exit_at = ''
+        latest_exit_dt = self._parse_datetime_or_none(latest_exit_at)
+        if latest_exit_dt is not None:
+            elapsed = datetime.now(timezone.utc) - latest_exit_dt.astimezone(timezone.utc)
+            if elapsed < timedelta(seconds=max(self.ma5_reentry_cooldown_seconds, 0)):
+                return 'recent_ma5_breakdown_exit'
+        if self._ma5_reentry_recovery_streaks.get(symbol, 0) < max(self.ma5_reentry_recovery_confirmations, 1):
+            return 'ma5_recovery_unconfirmed'
+        return ''
+
+    def _refresh_ma5_reentry_state(self, candidates: list[object]) -> None:
+        orders_repository = getattr(self.order_engine, 'orders_repository', None)
+        checker = getattr(orders_repository, 'has_filled_exit_intent_for_symbol_today', None) if orders_repository is not None else None
+        latest_finder = getattr(orders_repository, 'find_latest_filled_exit_intent_at', None) if orders_repository is not None else None
+        seen_symbols: set[str] = set()
+        for candidate in candidates:
+            symbol = str(getattr(candidate, 'symbol', '') or '').strip()
+            if not symbol or symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
+            has_same_day_exit = False
+            if callable(checker):
+                try:
+                    has_same_day_exit = bool(checker(symbol, 'MA5_BREAKDOWN'))
+                except Exception:
+                    has_same_day_exit = False
+            if not has_same_day_exit:
+                self._ma5_reentry_recovery_streaks.pop(symbol, None)
+                self._ma5_reentry_anchor_at.pop(symbol, None)
+                continue
+            latest_exit_at = ''
+            if callable(latest_finder):
+                try:
+                    latest_exit_at = str(latest_finder(symbol, 'MA5_BREAKDOWN') or '').strip()
+                except Exception:
+                    latest_exit_at = ''
+            if latest_exit_at and self._ma5_reentry_anchor_at.get(symbol) != latest_exit_at:
+                self._ma5_reentry_anchor_at[symbol] = latest_exit_at
+                self._ma5_reentry_recovery_streaks[symbol] = 0
+
+    def _update_ma5_reentry_recovery_streaks(self, candidates: list[object]) -> None:
+        seen_symbols: set[str] = set()
+        for candidate in candidates:
+            symbol = str(getattr(candidate, 'symbol', '') or '').strip()
+            if not symbol:
+                continue
+            seen_symbols.add(symbol)
+            price = float(getattr(candidate, 'price', 0.0) or 0.0)
+            ma5 = float(getattr(candidate, 'ma5', 0.0) or 0.0)
+            if ma5 > 0 and price >= ma5:
+                self._ma5_reentry_recovery_streaks[symbol] = self._ma5_reentry_recovery_streaks.get(symbol, 0) + 1
+                continue
+            self._ma5_reentry_recovery_streaks[symbol] = 0
+        for symbol in list(self._ma5_reentry_recovery_streaks.keys()):
+            if symbol not in seen_symbols and symbol not in self.universe_builder.symbols:
+                self._ma5_reentry_recovery_streaks.pop(symbol, None)
+                self._ma5_reentry_anchor_at.pop(symbol, None)
+
+    @staticmethod
+    def _parse_datetime_or_none(value: object) -> datetime | None:
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     def _should_cooldown_exit(self, position: object) -> bool:
         orders_repository = getattr(self.order_engine, 'orders_repository', None)
