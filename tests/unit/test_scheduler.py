@@ -103,9 +103,27 @@ class _StubSignalEngine:
 class _StubPortfolioService:
     open_positions: list[object] = field(default_factory=list)
     sync_calls: int = 0
+    eod_reconcile_calls: int = 0
+    force_sync_calls: list[dict[str, object]] = field(default_factory=list)
+    eod_reconcile_result: dict[str, object] = field(default_factory=lambda: {'report_date': '2026-03-16'})
+    force_sync_result: dict[str, object] = field(default_factory=lambda: {'applied': True, 'aborted_reason': '', 'broker_symbols': [], 'closed_symbols': [], 'recovered_symbols': [], 'created_symbols': []})
+    eod_reconcile_error: str | None = None
+    force_sync_error: str | None = None
 
     def sync_from_broker(self) -> None:
         self.sync_calls += 1
+
+    def reconcile_eod_daily_fills(self) -> dict[str, object]:
+        self.eod_reconcile_calls += 1
+        if self.eod_reconcile_error:
+            raise RuntimeError(self.eod_reconcile_error)
+        return dict(self.eod_reconcile_result)
+
+    def force_sync_from_broker(self, *, dry_run: bool = False, allow_empty: bool = False, confirm_rounds: int = 2) -> dict[str, object]:
+        self.force_sync_calls.append({'dry_run': dry_run, 'allow_empty': allow_empty, 'confirm_rounds': confirm_rounds})
+        if self.force_sync_error:
+            raise RuntimeError(self.force_sync_error)
+        return dict(self.force_sync_result)
 
     def snapshot(self):
         return type('Portfolio', (), {'open_positions': list(self.open_positions)})()
@@ -609,6 +627,103 @@ class SchedulerTargetsTest(unittest.TestCase):
             if event['event_type'] == 'daily_report_duplicate_skipped'
         ]
         self.assertEqual(1, len(skipped_events))
+
+    def test_run_post_market_runs_eod_reconcile_and_force_sync_before_daily_report(self) -> None:
+        notifier = _StubNotifier()
+        portfolio_service = _StubPortfolioService()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=[]),
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+            system_events_repository=_StubSystemEventsRepository(),
+            daily_report_builder=lambda: {'report_date': '2026-03-16', 'message': '[AUTO_TRADING] 일일 리포트'},
+        )
+        scheduler.run_post_market()
+        self.assertEqual(1, portfolio_service.eod_reconcile_calls)
+        self.assertEqual([{'dry_run': False, 'allow_empty': True, 'confirm_rounds': 2}], portfolio_service.force_sync_calls)
+        self.assertEqual(1, len(notifier.daily_reports))
+
+    def test_run_post_market_records_eod_reconcile_failure_and_still_sends_daily_report(self) -> None:
+        notifier = _StubNotifier()
+        system_events_repository = _StubSystemEventsRepository()
+        portfolio_service = _StubPortfolioService(eod_reconcile_error='daily fills timeout')
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=[]),
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+            system_events_repository=system_events_repository,
+            daily_report_builder=lambda: {'report_date': '2026-03-16', 'message': '[AUTO_TRADING] 일일 리포트'},
+        )
+        scheduler.run_post_market()
+        failure_events = [event for event in system_events_repository.events if event['event_type'] == 'eod_reconcile_failed']
+        self.assertEqual(1, len(failure_events))
+        self.assertIn('daily fills timeout', failure_events[0]['payload']['error'])
+        self.assertEqual(1, len(portfolio_service.force_sync_calls))
+        self.assertEqual(1, len(notifier.daily_reports))
+
+    def test_run_post_market_records_force_sync_failure_and_still_sends_daily_report(self) -> None:
+        notifier = _StubNotifier()
+        system_events_repository = _StubSystemEventsRepository()
+        portfolio_service = _StubPortfolioService(force_sync_error='broker sync timeout')
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=[]),
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+            system_events_repository=system_events_repository,
+            daily_report_builder=lambda: {'report_date': '2026-03-16', 'message': '[AUTO_TRADING] 일일 리포트'},
+        )
+        scheduler.run_post_market()
+        failure_events = [event for event in system_events_repository.events if event['event_type'] == 'eod_force_sync_failed']
+        self.assertEqual(1, len(failure_events))
+        self.assertIn('broker sync timeout', failure_events[0]['payload']['error'])
+        self.assertEqual(1, len(notifier.daily_reports))
+
+    def test_run_post_market_records_force_sync_abort_reason(self) -> None:
+        system_events_repository = _StubSystemEventsRepository()
+        portfolio_service = _StubPortfolioService(
+            force_sync_result={'applied': False, 'aborted_reason': 'unstable_broker_positions', 'broker_symbols': [], 'closed_symbols': [], 'recovered_symbols': [], 'created_symbols': []}
+        )
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=[]),
+            market_data_collector=_StubCollector(scores=self._build_scores()),
+            strategy_scorer=_StubScorer(scores=self._build_scores()),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=portfolio_service,
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+        )
+        scheduler.run_post_market()
+        aborted_events = [event for event in system_events_repository.events if event['event_type'] == 'eod_force_sync_aborted']
+        self.assertEqual(1, len(aborted_events))
+        self.assertEqual('unstable_broker_positions', aborted_events[0]['payload']['aborted_reason'])
 
 
     def test_run_market_scan_blocks_price_exit_when_snapshot_is_stale(self) -> None:

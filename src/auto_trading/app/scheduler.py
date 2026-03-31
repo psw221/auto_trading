@@ -177,6 +177,9 @@ class SchedulerService:
         if not self.trading_calendar.is_trading_day(datetime.now()):
             return
         self.recovery_service.recover()
+        report_date = self._current_report_date()
+        self._run_eod_reconcile(report_date=report_date)
+        self._run_eod_force_sync(report_date=report_date)
         self._send_daily_report()
 
     def _run_pre_market_once(self, now: datetime) -> None:
@@ -193,6 +196,56 @@ class SchedulerService:
             return
         self.run_post_market()
         self._last_post_market_run_date = current_day
+
+    @staticmethod
+    def _current_report_date() -> str:
+        return datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+
+    def _run_eod_reconcile(self, *, report_date: str) -> None:
+        reconcile = getattr(self.portfolio_service, 'reconcile_eod_daily_fills', None)
+        if not callable(reconcile):
+            return
+        try:
+            reconcile()
+        except Exception as exc:
+            self._record_system_event(
+                event_type='eod_reconcile_failed',
+                severity='ERROR',
+                component='scheduler',
+                message='Failed to reconcile end-of-day broker fills.',
+                payload={'report_date': report_date, 'error': str(exc)},
+            )
+
+    def _run_eod_force_sync(self, *, report_date: str) -> None:
+        force_sync = getattr(self.portfolio_service, 'force_sync_from_broker', None)
+        if not callable(force_sync):
+            return
+        try:
+            result = force_sync(dry_run=False, allow_empty=True, confirm_rounds=2)
+        except Exception as exc:
+            self._record_system_event(
+                event_type='eod_force_sync_failed',
+                severity='ERROR',
+                component='scheduler',
+                message='Failed to force-sync local positions from broker after EOD reconcile.',
+                payload={'report_date': report_date, 'error': str(exc)},
+            )
+            return
+        if not isinstance(result, dict):
+            return
+        aborted_reason = str(result.get('aborted_reason', '') or '').strip()
+        if aborted_reason:
+            self._record_system_event(
+                event_type='eod_force_sync_aborted',
+                severity='WARN',
+                component='scheduler',
+                message='Skipped broker-authoritative force sync after EOD reconcile.',
+                payload={
+                    'report_date': report_date,
+                    'aborted_reason': aborted_reason,
+                    'broker_symbols': list(result.get('broker_symbols') or []),
+                },
+            )
 
     def _run_market_cycle(self, now: datetime) -> None:
         if self._last_market_scan_at is None:

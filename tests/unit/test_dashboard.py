@@ -270,6 +270,50 @@ class DashboardSummaryTest(unittest.TestCase):
         self.assertIn('사유=익절', daily_rendered)
         self.assertIn('Samsung Electronics(005930)', daily_rendered)
 
+    def test_daily_report_marks_missing_eod_reconcile_as_not_run(self) -> None:
+        db_path = Path('data/test_dashboard_eod_missing.db')
+        master_path = Path('data/test_dashboard_eod_missing_universe.csv')
+        if db_path.exists():
+            db_path.unlink()
+        master_path.write_text('symbol,name,market,asset_type\n', encoding='utf-8')
+        db = Database(db_path)
+        db.initialize()
+        summary = build_daily_report_summary(db_path, master_path, now=datetime(2026, 3, 13, 9, 30, tzinfo=timezone.utc))
+        self.assertFalse(summary.eod_reconciled)
+        self.assertEqual({}, summary.eod_reconcile_issue)
+        rendered = format_daily_report_summary(summary)
+        self.assertIn('EOD 보정: 미실행', rendered)
+
+    def test_daily_report_marks_failed_eod_reconcile_as_failed(self) -> None:
+        db_path = Path('data/test_dashboard_eod_failed.db')
+        master_path = Path('data/test_dashboard_eod_failed_universe.csv')
+        if db_path.exists():
+            db_path.unlink()
+        master_path.write_text('symbol,name,market,asset_type\n', encoding='utf-8')
+        db = Database(db_path)
+        db.initialize()
+        with db.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO system_events (
+                    event_type, severity, component, message, payload_json, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    'eod_reconcile_failed',
+                    'ERROR',
+                    'scheduler',
+                    'Failed to reconcile end-of-day broker fills.',
+                    '{"report_date": "2026-03-13", "error": "daily fills timeout"}',
+                    '2026-03-13T15:21:00+09:00',
+                ),
+            )
+        summary = build_daily_report_summary(db_path, master_path, now=datetime(2026, 3, 13, 9, 30, tzinfo=timezone.utc))
+        self.assertFalse(summary.eod_reconciled)
+        self.assertEqual('eod_reconcile_failed', summary.eod_reconcile_issue['event_type'])
+        rendered = format_daily_report_summary(summary)
+        self.assertIn('EOD 보정: 실패 (daily fills timeout)', rendered)
+
     def test_build_dashboard_summary_dedupes_active_positions_by_symbol(self) -> None:
         db_path = Path("data/test_dashboard_duplicates.db")
         master_path = Path("data/test_dashboard_duplicates_universe.csv")

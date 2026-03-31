@@ -63,6 +63,7 @@ class DailyReportSummary:
     recent_market_data_failures: list[dict[str, object]]
     eod_reconciled: bool
     eod_reconcile_summary: dict[str, object]
+    eod_reconcile_issue: dict[str, object]
 
 
 def build_dashboard_summary(
@@ -218,6 +219,7 @@ def build_daily_report_summary(
             recent_market_data_failures=[],
             eod_reconciled=False,
             eod_reconcile_summary={},
+            eod_reconcile_issue={},
         )
 
     connection = sqlite3.connect(db_path)
@@ -248,6 +250,7 @@ def build_daily_report_summary(
         latest_market_data_refresh = _fetch_latest_market_data_refresh(connection)
         recent_market_data_failures = _fetch_recent_market_data_failures(connection)
         eod_reconcile_summary = _fetch_latest_eod_reconcile(connection, report_date=report_date)
+        eod_reconcile_issue = _fetch_latest_eod_reconcile_issue(connection, report_date=report_date)
     finally:
         connection.close()
 
@@ -277,6 +280,7 @@ def build_daily_report_summary(
         recent_market_data_failures=recent_market_data_failures,
         eod_reconciled=bool(eod_reconcile_summary),
         eod_reconcile_summary=eod_reconcile_summary,
+        eod_reconcile_issue=eod_reconcile_issue,
     )
 
 
@@ -744,6 +748,30 @@ def _fetch_latest_eod_reconcile(connection: sqlite3.Connection, *, report_date: 
     return {}
 
 
+def _fetch_latest_eod_reconcile_issue(connection: sqlite3.Connection, *, report_date: str) -> dict[str, object]:
+    rows = _fetch_rows(
+        connection,
+        """
+        SELECT event_type, severity, message, payload_json, occurred_at
+        FROM system_events
+        WHERE event_type IN ('eod_reconcile_failed', 'eod_force_sync_failed', 'eod_force_sync_aborted')
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 20
+        """,
+    )
+    for row in rows:
+        payload = _parse_metadata(row.get('payload_json'))
+        payload_report_date = str(payload.get('report_date') or '').strip()
+        if payload_report_date != report_date:
+            continue
+        payload['event_type'] = str(row.get('event_type') or '')
+        payload['severity'] = str(row.get('severity') or '')
+        payload['message'] = str(row.get('message') or '')
+        payload['occurred_at'] = str(row.get('occurred_at') or '')
+        return payload
+    return {}
+
+
 def _fetch_today_closed_trades(
     connection: sqlite3.Connection,
     *,
@@ -963,15 +991,27 @@ def _format_exit_reason(value: object) -> str:
 
 
 def _format_eod_reconcile_status(summary: DailyReportSummary) -> str:
-    if not summary.eod_reconciled:
-        return '미확인'
-    occurred_at = str(summary.eod_reconcile_summary.get('occurred_at') or '').strip()
-    fills = int(summary.eod_reconcile_summary.get('fills_backfilled_count') or 0)
-    trade_logs = int(summary.eod_reconcile_summary.get('trade_logs_backfilled_count') or 0)
-    detail = f'완료 (fills={fills}, trade_logs={trade_logs})'
-    if occurred_at:
-        return f'{detail} @ {occurred_at}'
-    return detail
+    if summary.eod_reconciled:
+        occurred_at = str(summary.eod_reconcile_summary.get('occurred_at') or '').strip()
+        fills = int(summary.eod_reconcile_summary.get('fills_backfilled_count') or 0)
+        trade_logs = int(summary.eod_reconcile_summary.get('trade_logs_backfilled_count') or 0)
+        detail = f'완료 (fills={fills}, trade_logs={trade_logs})'
+        if occurred_at:
+            return f'{detail} @ {occurred_at}'
+        return detail
+    if summary.eod_reconcile_issue:
+        event_type = str(summary.eod_reconcile_issue.get('event_type') or '').strip()
+        occurred_at = str(summary.eod_reconcile_issue.get('occurred_at') or '').strip()
+        if event_type == 'eod_force_sync_aborted':
+            reason = str(summary.eod_reconcile_issue.get('aborted_reason') or '').strip() or 'unknown'
+            detail = f'부분완료 (force_sync skipped: {reason})'
+        else:
+            error = str(summary.eod_reconcile_issue.get('error') or summary.eod_reconcile_issue.get('message') or '').strip()
+            detail = f'실패 ({error})' if error else '실패'
+        if occurred_at:
+            return f'{detail} @ {occurred_at}'
+        return detail
+    return '미실행'
 
 
 def _format_signed_number(value: object) -> str:
