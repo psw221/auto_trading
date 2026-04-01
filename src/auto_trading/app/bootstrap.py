@@ -8,6 +8,7 @@ from auto_trading.common.time import utc_now
 from auto_trading.app.dashboard import build_daily_report_summary, format_daily_report_summary
 from auto_trading.app.scheduler import SchedulerService
 from auto_trading.app.runtime import RuntimeService
+from auto_trading.app.telegram_commands import TelegramCommandService
 from auto_trading.broker.kis_client import KISClient
 from auto_trading.broker.kis_ws_client import KISWebSocketClient
 from auto_trading.common.holiday_generator import generate_holiday_csv, needs_holiday_refresh
@@ -54,6 +55,7 @@ class ApplicationContainer:
     notifier: TelegramNotifier
     scheduler: SchedulerService
     runtime: RuntimeService
+    telegram_command_service: TelegramCommandService | None = None
 
 
 def bootstrap() -> ApplicationContainer:
@@ -132,6 +134,11 @@ def bootstrap() -> ApplicationContainer:
         order_engine=order_engine,
         fail_safe_monitor=fail_safe_monitor,
     )
+    telegram_command_service = TelegramCommandService(
+        settings=settings,
+        notifier=notifier,
+        system_events_repository=system_events_repository,
+    )
     return ApplicationContainer(
         settings=settings,
         db=db,
@@ -149,6 +156,7 @@ def bootstrap() -> ApplicationContainer:
         notifier=notifier,
         scheduler=scheduler,
         runtime=runtime,
+        telegram_command_service=telegram_command_service,
     )
 
 

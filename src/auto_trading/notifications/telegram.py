@@ -88,6 +88,18 @@ class TelegramNotifier:
             payload=normalized,
         )
 
+
+    def send_command_response(self, payload: object) -> None:
+        normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
+        message = str(normalized.get("message", "")).strip()
+        if not message:
+            return
+        self._send_message(
+            message=message,
+            event_type="command_response_notification",
+            payload=normalized,
+        )
+
     def _send_message(self, *, message: str, event_type: str, payload: dict[str, object]) -> None:
         if not self.settings.telegram_bot_token or not self.settings.telegram_chat_id:
             self.system_events_repository.create(

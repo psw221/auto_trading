@@ -29,6 +29,9 @@ class ApplicationRunner:
             self.start()
         self.container.scheduler.tick()
         self.container.runtime.drain_once()
+        telegram_command_service = getattr(self.container, 'telegram_command_service', None)
+        if telegram_command_service is not None:
+            telegram_command_service.poll_once()
 
     def run_forever(self) -> None:
         if not self._started:

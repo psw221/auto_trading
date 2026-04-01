@@ -48,11 +48,20 @@ class _StubNotifier:
 
 
 @dataclass(slots=True)
+class _StubTelegramCommandService:
+    polled: int = 0
+
+    def poll_once(self) -> None:
+        self.polled += 1
+
+
+@dataclass(slots=True)
 class _StubContainer:
     runtime: _StubRuntime = field(default_factory=_StubRuntime)
     scheduler: _StubScheduler = field(default_factory=_StubScheduler)
     recovery_service: _StubRecovery = field(default_factory=_StubRecovery)
     notifier: _StubNotifier = field(default_factory=_StubNotifier)
+    telegram_command_service: _StubTelegramCommandService = field(default_factory=_StubTelegramCommandService)
 
 
 class ApplicationRunnerTest(unittest.TestCase):
@@ -64,6 +73,7 @@ class ApplicationRunnerTest(unittest.TestCase):
         self.assertEqual(1, container.runtime.started)
         self.assertEqual(1, container.scheduler.ticked)
         self.assertEqual(1, container.runtime.drained)
+        self.assertEqual(1, container.telegram_command_service.polled)
         self.assertEqual("auto_trading started", container.notifier.events[-1]["message"])
 
     def test_run_once_skips_recovery_when_disabled(self) -> None:
