@@ -257,13 +257,17 @@ class SchedulerTargetsTest(unittest.TestCase):
             for i in range(12)
         }
 
+
+    def _fresh_statuses_for(self, symbols: list[str]) -> dict[str, object]:
+        return {symbol: self._fresh_status() for symbol in symbols}
+
     def test_run_market_scan_sends_top_10_candidate_scores_only_on_change(self) -> None:
         scores = self._build_scores()
         notifier = _StubNotifier()
         universe_builder = _StubUniverseBuilder(symbols=list(scores.keys()))
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses=self._fresh_statuses_for(list(scores.keys()))),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -298,7 +302,37 @@ class SchedulerTargetsTest(unittest.TestCase):
         notifier = _StubNotifier()
         scheduler = SchedulerService(
             universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
-            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses=self._fresh_statuses_for(['000000', '000001'])),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=_StubSignalEngine(),
+            portfolio_service=_StubPortfolioService(),
+            risk_engine=_StubRiskEngine(),
+            order_engine=_StubOrderEngine(),
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            notifier=notifier,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(1, len(notifier.payloads))
+        self.assertEqual(['000001'], [item['symbol'] for item in notifier.payloads[0]['items']])
+
+
+    def test_run_market_scan_excludes_stale_market_data_from_target_alerts(self) -> None:
+        scores = {
+            '000000': StrategyScore(symbol='000000', score_total=100, price=110.0, ma5=100.0),
+            '000001': StrategyScore(symbol='000001', score_total=95, price=109.0, ma5=100.0),
+        }
+        notifier = _StubNotifier()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000', '000001']),
+            market_data_collector=_StubCollector(
+                scores=scores,
+                refresh_statuses={
+                    '000000': self._fresh_status('2026-03-19T00:00:00+00:00'),
+                    '000001': self._fresh_status(),
+                },
+            ),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=_StubPortfolioService(),
@@ -357,7 +391,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         )
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses=self._fresh_statuses_for(['000000', '000001', '000002'])),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=portfolio_service,
@@ -381,7 +415,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         )
         scheduler = SchedulerService(
             universe_builder=universe_builder,
-            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'000000': self._fresh_status()}),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses=self._fresh_statuses_for(['000000', '000001'])),
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=_StubSignalEngine(),
             portfolio_service=portfolio_service,

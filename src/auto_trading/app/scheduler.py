@@ -817,7 +817,7 @@ class SchedulerService:
         excluded = {symbol for symbol in (excluded_symbols or set()) if symbol}
         eligible = [
             item for item in candidates
-            if getattr(item, 'symbol', '') not in excluded and self._is_target_alert_eligible(item)
+            if getattr(item, 'symbol', '') not in excluded and self._is_target_alert_eligible(item, symbol=str(getattr(item, 'symbol', '') or '').strip())
         ]
         if not eligible:
             self._last_target_scores_signature = tuple()
@@ -845,8 +845,9 @@ class SchedulerService:
         except Exception:
             return
 
-    @staticmethod
-    def _is_target_alert_eligible(item: object) -> bool:
+    def _is_target_alert_eligible(self, item: object, *, symbol: str = '') -> bool:
+        if symbol and self._has_stale_market_data_for_symbol(symbol):
+            return False
         ma5 = float(getattr(item, 'ma5', 0.0) or 0.0)
         if ma5 <= 0.0:
             return True
