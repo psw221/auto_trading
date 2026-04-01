@@ -31,6 +31,8 @@ class TelegramNotifier:
     _symbol_name_cache_loaded: bool = False
 
     def send_trade_fill(self, payload: object) -> None:
+        if not getattr(self.settings, 'telegram_notify_trade_fill', True):
+            return
         normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
         message = self._format_trade_fill_message(normalized)
         self._send_message(
@@ -40,6 +42,8 @@ class TelegramNotifier:
         )
 
     def send_target_scores(self, payload: object) -> None:
+        if not getattr(self.settings, 'telegram_notify_target_scores', True):
+            return
         normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
         items = normalized.get("items")
         if not isinstance(items, list) or not items:
@@ -62,6 +66,8 @@ class TelegramNotifier:
         )
 
     def send_system_event(self, payload: object) -> None:
+        if not getattr(self.settings, 'telegram_notify_system_event', True):
+            return
         normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
         message = self._format_system_event_message(normalized)
         self._send_message(
@@ -71,6 +77,8 @@ class TelegramNotifier:
         )
 
     def send_trade_recovery(self, payload: object) -> None:
+        if not getattr(self.settings, 'telegram_notify_trade_recovery', True):
+            return
         normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
         message = self._format_trade_recovery_message(normalized)
         self._send_message(
@@ -80,6 +88,8 @@ class TelegramNotifier:
         )
 
     def send_daily_report(self, payload: object) -> None:
+        if not getattr(self.settings, 'telegram_notify_daily_report', True):
+            return
         normalized = payload if isinstance(payload, dict) else {"payload": str(payload)}
         message = self._format_daily_report_message(normalized)
         self._send_message(

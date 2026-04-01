@@ -22,6 +22,11 @@ class Settings:
     holiday_api_service_key: str
     telegram_bot_token: str
     telegram_chat_id: str
+    telegram_notify_trade_fill: bool = True
+    telegram_notify_trade_recovery: bool = True
+    telegram_notify_target_scores: bool = True
+    telegram_notify_system_event: bool = True
+    telegram_notify_daily_report: bool = True
     max_positions: int = 3
     base_weight: float = 0.25
     max_weight: float = 0.30

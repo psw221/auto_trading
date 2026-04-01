@@ -30,6 +30,11 @@ def _build_settings(
     token: str = "bot-token",
     chat_id: str = "123456",
     universe_master_path: Path | None = None,
+    notify_trade_fill: bool = True,
+    notify_trade_recovery: bool = True,
+    notify_target_scores: bool = True,
+    notify_system_event: bool = True,
+    notify_daily_report: bool = True,
 ) -> Settings:
     return Settings(
         env="demo",
@@ -48,6 +53,11 @@ def _build_settings(
         holiday_api_service_key="",
         telegram_bot_token=token,
         telegram_chat_id=chat_id,
+        telegram_notify_trade_fill=notify_trade_fill,
+        telegram_notify_trade_recovery=notify_trade_recovery,
+        telegram_notify_target_scores=notify_target_scores,
+        telegram_notify_system_event=notify_system_event,
+        telegram_notify_daily_report=notify_daily_report,
     )
 
 
@@ -214,6 +224,29 @@ class TelegramNotifierTest(unittest.TestCase):
                     "items": [
                         {"symbol": "005930", "score_total": 69, "price": 71000},
                         {"symbol": "069500", "score_total": 68, "price": 35000},
+                    ],
+                }
+            )
+        mocked.assert_not_called()
+        with self.db.transaction() as connection:
+            count = connection.execute("SELECT COUNT(*) AS cnt FROM system_events").fetchone()["cnt"]
+        self.assertEqual(0, count)
+
+
+    def test_send_target_scores_skips_when_notification_toggle_is_off(self) -> None:
+        notifier = TelegramNotifier(
+            _build_settings(
+                universe_master_path=Path("data/universe_master.sample.csv"),
+                notify_target_scores=False,
+            ),
+            self.system_events,
+        )
+        with patch("auto_trading.notifications.telegram.request.urlopen", return_value=_FakeResponse({"ok": True})) as mocked:
+            notifier.send_target_scores(
+                {
+                    "snapshot_time": "2026-03-13T10:30:00+09:00",
+                    "items": [
+                        {"symbol": "005930", "score_total": 92, "price": 71000},
                     ],
                 }
             )

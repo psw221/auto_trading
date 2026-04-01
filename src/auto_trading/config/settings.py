@@ -41,6 +41,11 @@ def load_settings(env_path: Path | None = None) -> Settings:
         holiday_api_service_key=_getenv("AUTO_TRADING_HOLIDAY_API_SERVICE_KEY", ""),
         telegram_bot_token=_getenv("AUTO_TRADING_TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=_getenv("AUTO_TRADING_TELEGRAM_CHAT_ID", ""),
+        telegram_notify_trade_fill=_getenv_bool("AUTO_TRADING_TELEGRAM_NOTIFY_TRADE_FILL", True),
+        telegram_notify_trade_recovery=_getenv_bool("AUTO_TRADING_TELEGRAM_NOTIFY_TRADE_RECOVERY", True),
+        telegram_notify_target_scores=_getenv_bool("AUTO_TRADING_TELEGRAM_NOTIFY_TARGET_SCORES", False),
+        telegram_notify_system_event=_getenv_bool("AUTO_TRADING_TELEGRAM_NOTIFY_SYSTEM_EVENT", True),
+        telegram_notify_daily_report=_getenv_bool("AUTO_TRADING_TELEGRAM_NOTIFY_DAILY_REPORT", True),
     )
 
 
@@ -72,3 +77,16 @@ def _getenv(key: str, default: str) -> str:
     if value is None or value == "":
         return default
     return value
+
+
+def _getenv_bool(key: str, default: bool) -> bool:
+    value = os.getenv(key)
+    if value is None or value == "":
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
