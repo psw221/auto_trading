@@ -4,22 +4,28 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtimeDir = Join-Path $projectRoot "data\runtime"
 $pidPath = Join-Path $runtimeDir "auto_trading.pid"
 
-if (-not (Test-Path $pidPath)) {
-    Write-Output "auto_trading is not running."
-    exit 0
+function Get-AutoTradingRuntimeProcesses {
+    Get-CimInstance Win32_Process | Where-Object {
+        $_.Name -eq 'python.exe' -and (
+            $_.CommandLine -like '*python.exe" -m auto_trading*' -or
+            $_.CommandLine -like '*python -m auto_trading*'
+        )
+    }
 }
 
-$pidValue = (Get-Content $pidPath -Raw).Trim()
-if (-not $pidValue) {
-    Remove-Item $pidPath -Force -ErrorAction SilentlyContinue
-    Write-Output "auto_trading pid file was empty and has been removed."
-    exit 0
+$trackedPid = $null
+if (Test-Path $pidPath) {
+    $pidValue = (Get-Content $pidPath -Raw).Trim()
+    if ($pidValue) {
+        $trackedPid = [int]$pidValue
+    } else {
+        Remove-Item $pidPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
-$process = Get-Process -Id ([int]$pidValue) -ErrorAction SilentlyContinue
-if ($null -eq $process) {
-    Remove-Item $pidPath -Force -ErrorAction SilentlyContinue
-    Write-Output "auto_trading process was not running. stale pid file removed."
+$runtimeProcesses = @(Get-AutoTradingRuntimeProcesses)
+if ($null -eq $trackedPid -and $runtimeProcesses.Count -eq 0) {
+    Write-Output 'auto_trading is not running.'
     exit 0
 }
 
@@ -49,7 +55,38 @@ try {
 } catch {
 }
 
-Stop-Process -Id $process.Id -Force
+$pythonIds = [System.Collections.Generic.HashSet[int]]::new()
+if ($null -ne $trackedPid) {
+    $null = $pythonIds.Add($trackedPid)
+}
+foreach ($process in $runtimeProcesses) {
+    $null = $pythonIds.Add([int]$process.ProcessId)
+}
+
+$parentIds = [System.Collections.Generic.HashSet[int]]::new()
+foreach ($processId in $pythonIds) {
+    $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" | Select-Object -First 1
+    if ($null -ne $processInfo -and [int]$processInfo.ParentProcessId -gt 0) {
+        $null = $parentIds.Add([int]$processInfo.ParentProcessId)
+    }
+}
+
+foreach ($processId in $pythonIds) {
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+}
+
+foreach ($parentId in $parentIds) {
+    $parent = Get-Process -Id $parentId -ErrorAction SilentlyContinue
+    if ($null -ne $parent -and $parent.ProcessName -eq 'pwsh') {
+        Stop-Process -Id $parentId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Remove-Item $pidPath -Force -ErrorAction SilentlyContinue
 
-Write-Output "auto_trading stopped. pid=$($process.Id)"
+$stoppedIds = @($pythonIds | Sort-Object)
+if ($stoppedIds.Count -eq 0) {
+    Write-Output 'auto_trading is not running.'
+} else {
+    Write-Output ("auto_trading stopped. pid=" + ($stoppedIds -join ','))
+}

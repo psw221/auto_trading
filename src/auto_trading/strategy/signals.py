@@ -9,6 +9,10 @@ from auto_trading.strategy.models import EntrySignal, ExitSignal, MarketSnapshot
 
 @dataclass(slots=True)
 class SignalEngine:
+    eod_profit_lock_threshold_pct: float = 0.5
+    eod_good_trend_min_score: int = 70
+    eod_good_trend_max_rsi: float = 75.0
+
     def evaluate_entry(self, candidates: list[StrategyScore]) -> list[EntrySignal]:
         qualified = [
             item
@@ -36,6 +40,33 @@ class SignalEngine:
         if self._holding_days(position) > 5:
             return ExitSignal(symbol=position.symbol, reason="time_exit", order_type="MARKET")
         return None
+
+
+    def evaluate_eod_profit_lock(
+        self,
+        position: Position,
+        snapshot: MarketSnapshot,
+        score: StrategyScore,
+        *,
+        now: datetime | None = None,
+    ) -> ExitSignal | None:
+        if snapshot.is_stale or not snapshot.indicators_ready:
+            return None
+        if position.avg_entry_price <= 0 or snapshot.price <= 0:
+            return None
+        opened_at = self._parse_position_opened_at(position)
+        if opened_at is None:
+            return None
+        current = now or datetime.now(opened_at.tzinfo or timezone.utc)
+        seoul = timezone(timedelta(hours=9))
+        if opened_at.astimezone(seoul).date() != current.astimezone(seoul).date():
+            return None
+        pnl_pct = ((snapshot.price / position.avg_entry_price) - 1.0) * 100.0
+        if pnl_pct < self.eod_profit_lock_threshold_pct:
+            return None
+        if self._is_good_trend(snapshot, score) and score.score_total >= self.eod_good_trend_min_score:
+            return None
+        return ExitSignal(symbol=position.symbol, reason="eod_profit_lock", order_type="MARKET")
 
     @staticmethod
     def _holding_days(position: Position) -> int:
@@ -99,3 +130,14 @@ class SignalEngine:
         if score.ma5 <= 0:
             return True
         return score.price >= score.ma5
+
+    def _is_good_trend(self, snapshot: MarketSnapshot, score: StrategyScore) -> bool:
+        if snapshot.price <= 0 or snapshot.ma5 <= 0 or snapshot.ma20 <= 0:
+            return False
+        if snapshot.price < snapshot.ma5:
+            return False
+        if snapshot.ma5 <= snapshot.ma20:
+            return False
+        if float(score.momentum_20 or 0.0) <= 0.0:
+            return False
+        return 0.0 < float(snapshot.rsi or 0.0) < self.eod_good_trend_max_rsi

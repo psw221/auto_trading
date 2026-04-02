@@ -986,6 +986,8 @@ def _format_exit_reason(value: object) -> str:
         'MA5BREAKDOWN': '5일선 이탈',
         'MA5_BREAKDOWN': '5일선 이탈',
         'EXIT': '일반 청산',
+        'EODPROFITLOCK': '장마감 수익 보호 청산',
+        'EOD_PROFIT_LOCK': '장마감 수익 보호 청산',
     }
     return mapping.get(reason, str(value or '').strip() or '-')
 

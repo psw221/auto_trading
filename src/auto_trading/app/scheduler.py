@@ -42,6 +42,8 @@ class SchedulerService:
     exit_retry_cooldown_seconds: int = 180
     ma5_reentry_cooldown_seconds: int = 2700
     ma5_reentry_recovery_confirmations: int = 2
+    eod_profit_lock_start_time: time = time(15, 10)
+    eod_profit_lock_end_time: time = time(15, 20)
     loop_sleep_seconds: float = 1.0
     _last_pre_market_run_date: str | None = field(init=False, default=None)
     _last_post_market_run_date: str | None = field(init=False, default=None)
@@ -80,8 +82,9 @@ class SchedulerService:
             self._build_market_data_refresh_request([item.symbol for item in items], portfolio)
         )
 
-    def run_market_scan(self) -> None:
-        if not self.trading_calendar.is_trading_day(datetime.now()):
+    def run_market_scan(self, now: datetime | None = None) -> None:
+        current = now or datetime.now()
+        if not self.trading_calendar.is_trading_day(current):
             return
         self._reconcile_orders_from_broker()
         self._sync_portfolio_from_broker()
@@ -105,6 +108,11 @@ class SchedulerService:
             if snapshot is None:
                 continue
             exit_signal = self.signal_engine.evaluate_exit(position, snapshot)
+            if exit_signal is None and self._is_eod_profit_lock_window(current):
+                score = self._build_position_score(position)
+                evaluate_eod_profit_lock = getattr(self.signal_engine, 'evaluate_eod_profit_lock', None)
+                if score is not None and callable(evaluate_eod_profit_lock):
+                    exit_signal = evaluate_eod_profit_lock(position, snapshot, score, now=current)
             if exit_signal is None:
                 continue
             decision = self.risk_engine.can_exit(exit_signal, portfolio)
@@ -249,12 +257,12 @@ class SchedulerService:
 
     def _run_market_cycle(self, now: datetime) -> None:
         if self._last_market_scan_at is None:
-            self.run_market_scan()
+            self.run_market_scan(now=now)
             self._last_market_scan_at = now
             return
         elapsed = (now - self._last_market_scan_at).total_seconds()
         if elapsed >= self.market_scan_interval_seconds:
-            self.run_market_scan()
+            self.run_market_scan(now=now)
             self._last_market_scan_at = now
 
     @staticmethod
@@ -456,6 +464,16 @@ class SchedulerService:
                 is_stale=True,
             )
         return None
+
+
+    def _build_position_score(self, position: object) -> object | None:
+        bars = self.market_data_collector.get_recent_bars(position.symbol, 30)
+        if len(bars) < 20:
+            return None
+        try:
+            return self.strategy_scorer.score(bars)
+        except Exception:
+            return None
 
     def _is_market_data_stale(self, refreshed_at: str) -> bool:
         if not refreshed_at:
@@ -857,6 +875,10 @@ class SchedulerService:
     @staticmethod
     def _is_pre_market(now: datetime) -> bool:
         return time(8, 45) <= now.time() < time(9, 0)
+
+    def _is_eod_profit_lock_window(self, now: datetime) -> bool:
+        current_time = now.time()
+        return self.eod_profit_lock_start_time <= current_time < self.eod_profit_lock_end_time
 
     @staticmethod
     def _is_market_open(now: datetime) -> bool:

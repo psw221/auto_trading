@@ -90,6 +90,7 @@ class _StubScorer:
 @dataclass(slots=True)
 class _StubSignalEngine:
     exit_signals: dict[str, object] = field(default_factory=dict)
+    eod_exit_signals: dict[str, object] = field(default_factory=dict)
     entry_signals: list[object] = field(default_factory=list)
 
     def evaluate_entry(self, candidates: list[StrategyScore]) -> list[object]:
@@ -97,6 +98,9 @@ class _StubSignalEngine:
 
     def evaluate_exit(self, position: object, snapshot: object) -> object | None:
         return self.exit_signals.get(getattr(position, 'symbol', ''))
+
+    def evaluate_eod_profit_lock(self, position: object, snapshot: object, score: object, *, now=None) -> object | None:
+        return self.eod_exit_signals.get(getattr(position, 'symbol', ''))
 
 
 @dataclass(slots=True)
@@ -817,6 +821,105 @@ class SchedulerTargetsTest(unittest.TestCase):
         scheduler.run_market_scan()
         self.assertEqual(1, len(order_engine.exits))
         self.assertEqual('088350', order_engine.exits[0][0].symbol)
+
+
+    def test_run_market_scan_triggers_eod_profit_lock_for_same_day_winner_without_good_trend(self) -> None:
+        scores = {
+            '088350': StrategyScore(
+                symbol='088350',
+                score_total=80,
+                price=1010.0,
+                ma_score=40,
+                ma5=1000.0,
+                ma20=990.0,
+                rsi=80.0,
+                momentum_20=5.0,
+            )
+        }
+        signal_engine = SignalEngine()
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['088350']),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'088350': self._fresh_status()}),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1010.0, 'opened_at': '2026-04-02T10:00:00+09:00'})()]
+            ),
+            risk_engine=_StubRiskEngine(exit_allowed=True),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+        )
+        scheduler.run_market_scan(now=datetime(2026, 4, 2, 15, 15))
+        self.assertEqual(1, len(order_engine.exits))
+        self.assertEqual('eod_profit_lock', order_engine.exits[0][0].reason)
+
+    def test_run_market_scan_skips_eod_profit_lock_for_same_day_winner_with_good_trend_and_high_score(self) -> None:
+        scores = {
+            '088350': StrategyScore(
+                symbol='088350',
+                score_total=80,
+                price=1010.0,
+                ma_score=40,
+                ma5=1000.0,
+                ma20=990.0,
+                rsi=60.0,
+                momentum_20=5.0,
+            )
+        }
+        signal_engine = SignalEngine()
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['088350']),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'088350': self._fresh_status()}),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1010.0, 'opened_at': '2026-04-02T10:00:00+09:00'})()]
+            ),
+            risk_engine=_StubRiskEngine(exit_allowed=True),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+        )
+        scheduler.run_market_scan(now=datetime(2026, 4, 2, 15, 15))
+        self.assertEqual(0, len(order_engine.exits))
+
+    def test_run_market_scan_keeps_take_profit_priority_over_eod_profit_lock(self) -> None:
+        scores = {
+            '088350': StrategyScore(
+                symbol='088350',
+                score_total=80,
+                price=1045.0,
+                ma_score=40,
+                ma5=1030.0,
+                ma20=990.0,
+                rsi=60.0,
+                momentum_20=8.0,
+            )
+        }
+        signal_engine = SignalEngine()
+        order_engine = _StubOrderEngine()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['088350']),
+            market_data_collector=_StubCollector(scores=scores, refresh_statuses={'088350': self._fresh_status()}),
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1045.0, 'opened_at': '2026-04-02T10:00:00+09:00'})()]
+            ),
+            risk_engine=_StubRiskEngine(exit_allowed=True),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+        )
+        scheduler.run_market_scan(now=datetime(2026, 4, 2, 15, 15))
+        self.assertEqual(1, len(order_engine.exits))
+        self.assertEqual('take_profit', order_engine.exits[0][0].reason)
 
     def test_run_market_scan_records_entry_skipped_when_risk_denies_entry(self) -> None:
         scores = self._build_scores()

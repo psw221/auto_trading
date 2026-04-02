@@ -316,6 +316,8 @@ class TelegramNotifier:
             "STOPLOSS": "손절",
             "TAKEPROFIT": "익절",
             "TIMEEXIT": "보유 기간 종료",
+            "EODPROFITLOCK": "장마감 수익 보호 청산",
+            "EOD_PROFIT_LOCK": "장마감 수익 보호 청산",
             "REPLACE": "정정 주문",
             "CANCEL": "주문 취소",
         }
