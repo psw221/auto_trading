@@ -39,6 +39,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         universe_master_path=Path(_getenv("AUTO_TRADING_UNIVERSE_MASTER_PATH", "./data/universe_master.csv")),
         holiday_calendar_path=Path(_getenv("AUTO_TRADING_HOLIDAY_CALENDAR_PATH", "./data/krx_holidays.csv")),
         holiday_api_service_key=_getenv("AUTO_TRADING_HOLIDAY_API_SERVICE_KEY", ""),
+        rest_min_interval_seconds=_getenv_float("AUTO_TRADING_REST_MIN_INTERVAL_SECONDS", 0.12),
         telegram_bot_token=_getenv("AUTO_TRADING_TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=_getenv("AUTO_TRADING_TELEGRAM_CHAT_ID", ""),
         telegram_notify_trade_fill=_getenv_bool("AUTO_TRADING_TELEGRAM_NOTIFY_TRADE_FILL", True),
@@ -89,4 +90,14 @@ def _getenv_bool(key: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _getenv_float(key: str, default: float) -> float:
+    value = os.getenv(key)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 

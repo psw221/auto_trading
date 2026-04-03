@@ -20,6 +20,7 @@ class Settings:
     universe_master_path: Path
     holiday_calendar_path: Path
     holiday_api_service_key: str
+    rest_min_interval_seconds: float
     telegram_bot_token: str
     telegram_chat_id: str
     telegram_notify_trade_fill: bool = True

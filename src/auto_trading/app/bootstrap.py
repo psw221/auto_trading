@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic, sleep
 
 from auto_trading.common.time import utc_now
 
@@ -56,6 +57,21 @@ class ApplicationContainer:
     scheduler: SchedulerService
     runtime: RuntimeService
     telegram_command_service: TelegramCommandService | None = None
+
+
+class _RestThrottle:
+    def __init__(self, min_interval_seconds: float) -> None:
+        self.min_interval_seconds = max(float(min_interval_seconds or 0.0), 0.0)
+        self._next_allowed_at = 0.0
+
+    def wait(self) -> None:
+        if self.min_interval_seconds <= 0.0:
+            return
+        now = monotonic()
+        if now < self._next_allowed_at:
+            sleep(self._next_allowed_at - now)
+            now = monotonic()
+        self._next_allowed_at = now + self.min_interval_seconds
 
 
 def bootstrap() -> ApplicationContainer:
@@ -120,7 +136,7 @@ def bootstrap() -> ApplicationContainer:
         notifier=notifier,
         system_events_repository=system_events_repository,
         strategy_snapshots_repository=strategy_snapshots_repository,
-        market_data_refresher=lambda symbols: _refresh_market_data_from_rest(symbols, kis_client, market_data_collector),
+        market_data_refresher=lambda symbols: _refresh_market_data_from_rest(symbols, kis_client, market_data_collector, min_interval_seconds=settings.rest_min_interval_seconds),
         universe_master_refresher=lambda: generate_master_csv(output=settings.universe_master_path),
         holiday_calendar_refresher=lambda: _refresh_holiday_calendar(settings),
         daily_report_builder=lambda: _build_daily_report_payload(
@@ -182,12 +198,20 @@ def _build_daily_report_payload(db_path, universe_master_path) -> dict[str, obje
     }
 
 
-def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISClient, market_data_collector: MarketDataCollector) -> dict[str, object]:
+def _refresh_market_data_from_rest(
+    request: dict[str, object],
+    kis_client: KISClient,
+    market_data_collector: MarketDataCollector,
+    *,
+    min_interval_seconds: float = 0.12,
+) -> dict[str, object]:
     priority_symbols = [str(symbol) for symbol in (request.get('priority_symbols') or []) if str(symbol)]
     scan_symbols = [str(symbol) for symbol in (request.get('scan_symbols') or []) if str(symbol)]
     refresh_interval_seconds = int(request.get('universe_refresh_interval_seconds') or 90)
     now = utc_now()
     requested_symbols = priority_symbols + [symbol for symbol in scan_symbols if symbol not in set(priority_symbols)]
+    throttle = _RestThrottle(min_interval_seconds)
+    started_at = monotonic()
     attempted_count = 0
     refreshed_count = 0
     skipped_count = 0
@@ -220,7 +244,9 @@ def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISCl
             continue
         attempted_count += 1
         try:
+            throttle.wait()
             current = kis_client.get_current_price(symbol)
+            throttle.wait()
             history = kis_client.get_daily_bars(symbol, lookback_days=30)
             snapshot, bars = _build_validated_rest_market_data(symbol, current=current, history=history)
             market_data_collector.set_rest_market_data(symbol, snapshot, bars, refreshed_at=now)
@@ -244,6 +270,8 @@ def _refresh_market_data_from_rest(request: dict[str, object], kis_client: KISCl
         'failed_details': failed_details[:10],
         'skipped_symbols': skipped_symbols[:10],
         'priority_count': len(priority_symbols),
+        'throttle_min_interval_seconds': float(min_interval_seconds),
+        'duration_seconds': round(monotonic() - started_at, 3),
     }
 
 
@@ -283,14 +311,6 @@ def _build_validated_rest_market_data(
         turnover=latest_turnover,
     )
     return snapshot, bars
-
-def _classify_market_data_refresh_failure(exc: Exception) -> str:
-    message = str(exc).lower()
-    if 'current price missing or zero' in message:
-        return 'BAD_PRICE'
-    if 'daily bars missing or insufficient' in message:
-        return 'INSUFFICIENT_BARS'
-    return 'ERROR'
 
 def _classify_market_data_refresh_failure(exc: Exception) -> str:
     message = str(exc).lower()

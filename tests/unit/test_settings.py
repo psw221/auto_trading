@@ -36,6 +36,7 @@ class LoadSettingsTest(unittest.TestCase):
         self.assertEqual("real", settings.env)
         self.assertEqual(Path("data/runtime.db"), settings.db_path)
         self.assertEqual("123456", settings.telegram_chat_id)
+        self.assertAlmostEqual(0.12, settings.rest_min_interval_seconds)
         self.assertTrue(settings.telegram_notify_trade_fill)
         self.assertFalse(settings.telegram_notify_target_scores)
 
@@ -114,6 +115,24 @@ class LoadSettingsTest(unittest.TestCase):
         self.assertFalse(settings.telegram_notify_system_event)
         self.assertTrue(settings.telegram_notify_trade_recovery)
         self.assertTrue(settings.telegram_notify_daily_report)
+
+        self.assertAlmostEqual(0.12, settings.rest_min_interval_seconds)
+
+    def test_load_settings_reads_rest_throttle_interval(self) -> None:
+        env_path = Path("data/test_settings.env")
+        if env_path.exists():
+            env_path.unlink()
+        env_path.write_text("AUTO_TRADING_REST_MIN_INTERVAL_SECONDS=0.2", encoding="utf-8")
+        original_env = os.environ.copy()
+        try:
+            os.environ.pop("AUTO_TRADING_REST_MIN_INTERVAL_SECONDS", None)
+            settings = load_settings(env_path=env_path)
+        finally:
+            os.environ.clear()
+            os.environ.update(original_env)
+            if env_path.exists():
+                env_path.unlink()
+        self.assertAlmostEqual(0.2, settings.rest_min_interval_seconds)
 
 
 if __name__ == "__main__":

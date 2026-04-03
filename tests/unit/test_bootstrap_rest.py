@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from dataclasses import dataclass, field
 
 from auto_trading.app.bootstrap import _build_validated_rest_market_data, _refresh_market_data_from_rest
@@ -52,6 +53,28 @@ class BootstrapRestRefreshTest(unittest.TestCase):
         self.assertEqual(3, result['refreshed_count'])
         self.assertEqual(0, result['skipped_count'])
         self.assertEqual(1, result['priority_count'])
+        self.assertEqual(0.12, result['throttle_min_interval_seconds'])
+        self.assertGreaterEqual(result['duration_seconds'], 0.0)
+
+    def test_refresh_uses_rest_throttle_between_calls(self) -> None:
+        client = _StubKISClient()
+        collector = MarketDataCollector(MarketDataCache())
+        monotonic_values = iter([0.0, 0.0, 0.05, 0.12, 0.12, 0.18, 0.24])
+        with patch('auto_trading.app.bootstrap.monotonic', side_effect=lambda: next(monotonic_values)):
+            with patch('auto_trading.app.bootstrap.sleep') as mocked_sleep:
+                result = _refresh_market_data_from_rest(
+                    {
+                        'priority_symbols': ['088350'],
+                        'scan_symbols': [],
+                        'universe_refresh_interval_seconds': 90,
+                    },
+                    client,
+                    collector,
+                    min_interval_seconds=0.12,
+                )
+        self.assertEqual(1, result['refreshed_count'])
+        self.assertEqual(1, mocked_sleep.call_count)
+        self.assertAlmostEqual(0.07, mocked_sleep.call_args.args[0], places=2)
 
     def test_refresh_reuses_recent_universe_data_but_not_priority_holdings(self) -> None:
         client = _StubKISClient()
