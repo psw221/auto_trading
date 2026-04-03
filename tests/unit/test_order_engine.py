@@ -89,6 +89,7 @@ def build_settings() -> Settings:
         universe_master_path=Path("data/universe_master.csv"),
         holiday_calendar_path=Path("data/krx_holidays.csv"),
         holiday_api_service_key="",
+        rest_min_interval_seconds=0.12,
         telegram_bot_token="",
         telegram_chat_id="",
     )
@@ -208,6 +209,34 @@ class OrderEngineExceptionTest(unittest.TestCase):
         self.assertEqual(3, last_payload["total_qty"])
         self.assertEqual(0, last_payload["remaining_qty"])
         self.assertEqual(3, last_payload["position_qty"])
+        with db.transaction() as connection:
+            rows = connection.execute(
+                "SELECT event_type FROM system_events WHERE event_type = 'broker_fill_received' ORDER BY id"
+            ).fetchall()
+        self.assertEqual(2, len(rows))
+
+    def test_handle_broker_event_logs_unmatched_fill(self) -> None:
+        event = BrokerRealtimeEvent(
+            event_type="fill",
+            symbol="005930",
+            payload={
+                "order_no": "UNKNOWN-ORDER",
+                "symbol": "005930",
+                "side": "BUY",
+                "fill_qty": "1",
+                "fill_price": "70000",
+                "filled_at": "2026-03-12T09:10:00+09:00",
+            },
+        )
+
+        self.engine.handle_broker_event(event)
+
+        with self.db.transaction() as connection:
+            rows = connection.execute(
+                "SELECT event_type, payload_json FROM system_events WHERE event_type IN ('broker_fill_received', 'broker_fill_unmatched_order') ORDER BY id"
+            ).fetchall()
+        self.assertEqual(["broker_fill_received", "broker_fill_unmatched_order"], [row["event_type"] for row in rows])
+        self.assertIn('UNKNOWN-ORDER', rows[-1]["payload_json"])
 
     def test_submit_entry_blocks_when_active_position_exists(self) -> None:
         self.positions.upsert(__import__('auto_trading.portfolio.models', fromlist=['Position']).Position(symbol='005930', qty=1, status='OPEN'))
@@ -586,9 +615,11 @@ class OrderEngineExceptionTest(unittest.TestCase):
         self.assertEqual(51200.0, notifier.trade_recovery_payloads[0]['price'])
         with db.transaction() as connection:
             row = connection.execute(
-                "SELECT event_type FROM system_events WHERE event_type = 'unknown_buy_order_recovered' ORDER BY id DESC LIMIT 1"
+                "SELECT event_type, payload_json FROM system_events WHERE event_type = 'unknown_buy_order_recovered' ORDER BY id DESC LIMIT 1"
             ).fetchone()
         self.assertIsNotNone(row)
+        self.assertIn('"broker_position_found": true', row['payload_json'].lower())
+        self.assertIn('"used_daily_fills_retry": true', row['payload_json'].lower())
 
 
 

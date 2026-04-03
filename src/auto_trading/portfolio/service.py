@@ -463,7 +463,14 @@ class PortfolioService:
                     "symbol": local_position.symbol,
                     "position_id": local_position.id,
                     "order_id": latest_order.id,
+                    "broker_order_id": latest_order.broker_order_id,
+                    "order_status": latest_order.status,
+                    "order_side": latest_order.side,
                     "absence_count": absence_count,
+                    "absence_threshold": self.unresolved_sell_absence_threshold,
+                    "open_order_found": False,
+                    "daily_fill_match_count": 0,
+                    "used_exit_price": latest_order.price or local_position.current_price or local_position.avg_entry_price,
                 },
             )
             return False
@@ -487,7 +494,19 @@ class PortfolioService:
             event_type="position_closed_from_broker_absence",
             severity="WARN",
             message="Closed local position because broker no longer reports holdings after repeated unresolved sell checks.",
-            payload={"symbol": local_position.symbol, "position_id": local_position.id, "order_id": latest_order.id, "absence_count": absence_count},
+            payload={
+                "symbol": local_position.symbol,
+                "position_id": local_position.id,
+                "order_id": latest_order.id,
+                "broker_order_id": latest_order.broker_order_id,
+                "order_status": latest_order.status,
+                "order_side": latest_order.side,
+                "absence_count": absence_count,
+                "absence_threshold": self.unresolved_sell_absence_threshold,
+                "open_order_found": False,
+                "daily_fill_match_count": 0,
+                "used_exit_price": latest_order.price or local_position.current_price or local_position.avg_entry_price,
+            },
         )
         self._ensure_trade_entry_for_exit(local_position, latest_order)
         self.trade_logs_repository.close_trade(local_position, latest_order, latest_order.price or local_position.current_price or local_position.avg_entry_price)

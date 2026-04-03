@@ -39,6 +39,7 @@ def build_settings(master_path: Path | None = None) -> Settings:
         universe_master_path=master_path or Path("data/universe_master.csv"),
         holiday_calendar_path=Path("data/krx_holidays.csv"),
         holiday_api_service_key="",
+        rest_min_interval_seconds=0.12,
         telegram_bot_token="",
         telegram_chat_id="",
     )
@@ -323,13 +324,15 @@ class FixtureBasedTests(unittest.TestCase):
         self.assertEqual(0, saved_order.remaining_qty)
         with db.transaction() as connection:
             check_event = connection.execute(
-                "SELECT event_type FROM system_events WHERE event_type = 'broker_position_absent_after_unresolved_sell_check' ORDER BY id DESC LIMIT 1"
+                "SELECT event_type, payload_json FROM system_events WHERE event_type = 'broker_position_absent_after_unresolved_sell_check' ORDER BY id DESC LIMIT 1"
             ).fetchone()
             close_event = connection.execute(
-                "SELECT event_type FROM system_events WHERE event_type = 'position_closed_from_broker_absence' ORDER BY id DESC LIMIT 1"
+                "SELECT event_type, payload_json FROM system_events WHERE event_type = 'position_closed_from_broker_absence' ORDER BY id DESC LIMIT 1"
             ).fetchone()
         self.assertIsNotNone(check_event)
         self.assertIsNotNone(close_event)
+        self.assertIn('"absence_threshold": 2', check_event['payload_json'])
+        self.assertIn('"used_exit_price": 71000.0', close_event['payload_json'])
         self.assertEqual(1, len(notifier.trade_recovery_payloads))
         self.assertEqual('SELL', notifier.trade_recovery_payloads[0]['side'])
         self.assertEqual('005930', notifier.trade_recovery_payloads[0]['symbol'])

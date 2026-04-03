@@ -198,8 +198,36 @@ class OrderEngine:
                 fill_price=float(event.payload.get("fill_price", "0")),
                 filled_at=event.payload.get("filled_at", utc_now().isoformat()),
             )
+            self.system_events_repository.create(
+                event_type="broker_fill_received",
+                severity="INFO",
+                component="orders.engine",
+                message="Received broker fill event from realtime stream.",
+                payload={
+                    "order_no": fill.order_no,
+                    "symbol": fill.symbol,
+                    "side": fill.side,
+                    "fill_qty": fill.fill_qty,
+                    "fill_price": fill.fill_price,
+                    "filled_at": fill.filled_at,
+                },
+            )
             order = self.orders_repository.find_by_broker_order_id(fill.order_no)
             if order is None:
+                self.system_events_repository.create(
+                    event_type="broker_fill_unmatched_order",
+                    severity="WARN",
+                    component="orders.engine",
+                    message="Received broker fill event but could not match it to a local order.",
+                    payload={
+                        "order_no": fill.order_no,
+                        "symbol": fill.symbol,
+                        "side": fill.side,
+                        "fill_qty": fill.fill_qty,
+                        "fill_price": fill.fill_price,
+                        "filled_at": fill.filled_at,
+                    },
+                )
                 return None
             next_filled_qty = order.filled_qty + fill.fill_qty
             remaining_qty = max(order.qty - next_filled_qty, 0)
@@ -269,6 +297,7 @@ class OrderEngine:
         for order in self.orders_repository.find_reconcilable_orders():
             matched = next((item for item in open_orders if item.order_no == order.broker_order_id), None)
             fill_matched = list(fill_map.get(order.broker_order_id, []))
+            used_daily_fills_retry = False
             if not fill_matched and matched is None and not retried_daily_fills:
                 try:
                     daily_fills_retry = self.kis_client.get_daily_fills()
@@ -276,6 +305,7 @@ class OrderEngine:
                     daily_fills_retry = []
                 else:
                     retried_daily_fills = True
+                    used_daily_fills_retry = True
                     fill_map.clear()
                     for fill in daily_fills_retry:
                         fill_map.setdefault(fill.order_no, []).append(fill)
@@ -310,7 +340,18 @@ class OrderEngine:
                         severity="INFO",
                         component="orders.engine",
                         message="Recovered buy order from broker holdings during reconciliation.",
-                        payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
+                        payload={
+                            "order_id": order.id,
+                            "broker_order_id": order.broker_order_id,
+                            "symbol": order.symbol,
+                            "order_side": order.side,
+                            "order_status": order.status,
+                            "open_order_found": False,
+                            "daily_fill_match_count": len(fill_matched),
+                            "used_daily_fills_retry": used_daily_fills_retry,
+                            "broker_position_found": True,
+                            "broker_position_qty": broker_position.qty,
+                        },
                     )
                     record_estimated_entry = getattr(self.portfolio_service, 'record_estimated_entry_recovery', None)
                     if callable(record_estimated_entry):
@@ -331,7 +372,17 @@ class OrderEngine:
                             severity="WARN",
                             component="orders.engine",
                             message="Closed stale unknown order after it remained unresolved beyond the cleanup threshold.",
-                            payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
+                            payload={
+                                "order_id": order.id,
+                                "broker_order_id": order.broker_order_id,
+                                "symbol": order.symbol,
+                                "order_side": order.side,
+                                "order_status": order.status,
+                                "open_order_found": False,
+                                "daily_fill_match_count": len(fill_matched),
+                                "used_daily_fills_retry": used_daily_fills_retry,
+                                "broker_position_found": bool(order.symbol in broker_positions),
+                            },
                         )
                     else:
                         self.system_events_repository.create(
@@ -339,7 +390,17 @@ class OrderEngine:
                             severity="WARN",
                             component="orders.engine",
                             message="Unknown order could not be resolved from broker open orders.",
-                            payload={"order_id": order.id, "broker_order_id": order.broker_order_id},
+                            payload={
+                                "order_id": order.id,
+                                "broker_order_id": order.broker_order_id,
+                                "symbol": order.symbol,
+                                "order_side": order.side,
+                                "order_status": order.status,
+                                "open_order_found": False,
+                                "daily_fill_match_count": len(fill_matched),
+                                "used_daily_fills_retry": used_daily_fills_retry,
+                                "broker_position_found": bool(order.symbol in broker_positions),
+                            },
                         )
                 else:
                     self.orders_repository.update_status(
@@ -353,7 +414,17 @@ class OrderEngine:
                         severity="WARN",
                         component="orders.engine",
                         message="Submitted order not found in broker open orders or daily fills.",
-                        payload={"order_id": order.id, "broker_order_id": order.broker_order_id, "symbol": order.symbol},
+                        payload={
+                            "order_id": order.id,
+                            "broker_order_id": order.broker_order_id,
+                            "symbol": order.symbol,
+                            "order_side": order.side,
+                            "order_status": order.status,
+                            "open_order_found": False,
+                            "daily_fill_match_count": len(fill_matched),
+                            "used_daily_fills_retry": used_daily_fills_retry,
+                            "broker_position_found": bool(order.symbol in broker_positions),
+                        },
                     )
                 continue
             next_status = "PARTIALLY_FILLED" if matched.filled_qty > 0 else "ACKNOWLEDGED"
