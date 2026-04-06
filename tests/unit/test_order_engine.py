@@ -213,7 +213,14 @@ class OrderEngineExceptionTest(unittest.TestCase):
             rows = connection.execute(
                 "SELECT event_type FROM system_events WHERE event_type = 'broker_fill_received' ORDER BY id"
             ).fetchall()
+            trade_row = connection.execute(
+                "SELECT qty, entry_price FROM trade_logs WHERE entry_order_id = ? ORDER BY id DESC LIMIT 1",
+                (order.id,),
+            ).fetchone()
         self.assertEqual(2, len(rows))
+        self.assertIsNotNone(trade_row)
+        self.assertEqual(3, trade_row['qty'])
+        self.assertEqual(70000.0, trade_row['entry_price'])
 
     def test_handle_broker_event_logs_unmatched_fill(self) -> None:
         event = BrokerRealtimeEvent(

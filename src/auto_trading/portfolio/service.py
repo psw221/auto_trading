@@ -372,8 +372,11 @@ class PortfolioService:
             else:
                 position.status = "OPEN"
         self.positions_repository.upsert(position)
-        if fill.side == "BUY" and position.opened_at == now:
-            self.trade_logs_repository.create_entry(position, order)
+        if fill.side == "BUY":
+            if position.opened_at == now:
+                self.trade_logs_repository.create_entry(position, order)
+            else:
+                self.trade_logs_repository.sync_open_trade_entry(position)
         if fill.side == "SELL" and was_closed:
             self.trade_logs_repository.close_trade(position, order, fill.fill_price)
 

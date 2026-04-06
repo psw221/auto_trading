@@ -92,6 +92,40 @@ class TradeLogsRepository:
             )
         return int(cursor.lastrowid)
 
+
+    def sync_open_trade_entry(self, position: Position) -> None:
+        if position.id is None:
+            return
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM trade_logs
+                WHERE position_id = ?
+                  AND exit_at IS NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (position.id,),
+            ).fetchone()
+            if row is None:
+                return
+            connection.execute(
+                """
+                UPDATE trade_logs
+                SET entry_price = ?,
+                    qty = ?,
+                    entry_at = COALESCE(entry_at, ?)
+                WHERE id = ?
+                """,
+                (
+                    position.avg_entry_price,
+                    position.qty,
+                    position.opened_at,
+                    row['id'],
+                ),
+            )
+
     def close_trade(self, position: Position, order: Order, exit_price: float) -> None:
         with self.db.transaction() as connection:
             row = connection.execute(

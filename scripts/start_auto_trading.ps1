@@ -16,7 +16,14 @@ New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 if (Test-Path $pidPath) {
-    $existingPid = (Get-Content $pidPath -Raw).Trim()
+    $existingPid = ''
+    try {
+        if (Test-Path $pidPath) {
+            $existingPid = (Get-Content $pidPath -Raw -ErrorAction Stop).Trim()
+        }
+    } catch {
+        $existingPid = ''
+    }
     if ($existingPid) {
         $existingProcess = Get-Process -Id ([int]$existingPid) -ErrorAction SilentlyContinue
         if ($null -ne $existingProcess) {
