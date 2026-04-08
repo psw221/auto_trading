@@ -764,7 +764,7 @@ class SchedulerTargetsTest(unittest.TestCase):
         self.assertEqual('unstable_broker_positions', aborted_events[0]['payload']['aborted_reason'])
 
 
-    def test_run_market_scan_blocks_price_exit_when_snapshot_is_stale(self) -> None:
+    def test_run_market_scan_allows_take_profit_exit_when_snapshot_is_stale(self) -> None:
         scores = self._build_scores()
         stale_status = type('RefreshStatus', (), {'last_success_at': '2026-03-19T00:00:00+00:00', 'source': 'REST'})()
         collector = _StubCollector(
@@ -791,7 +791,8 @@ class SchedulerTargetsTest(unittest.TestCase):
             market_data_stale_after_seconds=120,
         )
         scheduler.run_market_scan()
-        self.assertEqual(0, len(order_engine.exits))
+        self.assertEqual(1, len(order_engine.exits))
+        self.assertEqual('take_profit', order_engine.exits[0][0].reason)
 
     def test_run_market_scan_exits_open_position_from_latest_snapshot_without_20_bars(self) -> None:
         scores = self._build_scores()
@@ -844,7 +845,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(
-                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1010.0, 'opened_at': '2026-04-02T10:00:00+09:00'})()]
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1010.0, 'opened_at': datetime.now(timezone.utc).isoformat()})()]
             ),
             risk_engine=_StubRiskEngine(exit_allowed=True),
             order_engine=order_engine,
@@ -852,7 +853,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
         )
-        scheduler.run_market_scan(now=datetime(2026, 4, 2, 15, 15))
+        scheduler.run_market_scan(now=datetime.now().replace(hour=15, minute=15, second=0, microsecond=0))
         self.assertEqual(1, len(order_engine.exits))
         self.assertEqual('eod_profit_lock', order_engine.exits[0][0].reason)
 
@@ -877,7 +878,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(
-                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1010.0, 'opened_at': '2026-04-02T10:00:00+09:00'})()]
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1010.0, 'opened_at': datetime.now(timezone.utc).isoformat()})()]
             ),
             risk_engine=_StubRiskEngine(exit_allowed=True),
             order_engine=order_engine,
@@ -885,7 +886,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             fail_safe_monitor=_StubFailSafeMonitor(),
             trading_calendar=self._calendar(),
         )
-        scheduler.run_market_scan(now=datetime(2026, 4, 2, 15, 15))
+        scheduler.run_market_scan(now=datetime.now().replace(hour=15, minute=15, second=0, microsecond=0))
         self.assertEqual(0, len(order_engine.exits))
 
     def test_run_market_scan_keeps_take_profit_priority_over_eod_profit_lock(self) -> None:
@@ -909,7 +910,7 @@ class SchedulerTargetsTest(unittest.TestCase):
             strategy_scorer=_StubScorer(scores=scores),
             signal_engine=signal_engine,
             portfolio_service=_StubPortfolioService(
-                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1045.0, 'opened_at': '2026-04-02T10:00:00+09:00'})()]
+                open_positions=[type('Position', (), {'symbol': '088350', 'avg_entry_price': 1000.0, 'current_price': 1045.0, 'opened_at': datetime.now(timezone.utc).isoformat()})()]
             ),
             risk_engine=_StubRiskEngine(exit_allowed=True),
             order_engine=order_engine,
@@ -1312,6 +1313,44 @@ class SchedulerTargetsTest(unittest.TestCase):
             if event['event_type'] == 'exit_retry_cooled_down'
         ]
         self.assertEqual(1, len(cooled_down_events))
+
+    def test_run_market_scan_allows_take_profit_retry_with_shorter_cooldown(self) -> None:
+        scores = self._build_scores()
+        fresh_status = type('RefreshStatus', (), {'last_success_at': '2999-03-19T06:00:00+00:00', 'source': 'REST'})()
+        collector = _StubCollector(
+            scores=scores,
+            latest_snapshots={'006360': MarketSnapshot(symbol='006360', price=30600.0, source='REST', refreshed_at='2999-03-19T06:00:00+00:00')},
+            short_bar_symbols={'006360'},
+            refresh_statuses={'006360': fresh_status},
+        )
+        signal_engine = SignalEngine()
+
+        class _OrdersRepo:
+            def has_recent_rejected_exit(self, symbol, *, within_seconds):
+                return within_seconds > 30
+
+        order_engine = _StubOrderEngine(orders_repository=_OrdersRepo())
+        system_events_repository = _StubSystemEventsRepository()
+        scheduler = SchedulerService(
+            universe_builder=_StubUniverseBuilder(symbols=['000000']),
+            market_data_collector=collector,
+            strategy_scorer=_StubScorer(scores=scores),
+            signal_engine=signal_engine,
+            portfolio_service=_StubPortfolioService(
+                open_positions=[type('Position', (), {'symbol': '006360', 'avg_entry_price': 26250.0, 'current_price': 30600.0})()]
+            ),
+            risk_engine=_StubRiskEngine(exit_allowed=True),
+            order_engine=order_engine,
+            recovery_service=_StubRecoveryService(),
+            fail_safe_monitor=_StubFailSafeMonitor(),
+            trading_calendar=self._calendar(),
+            system_events_repository=system_events_repository,
+            take_profit_retry_cooldown_seconds=30,
+            exit_retry_cooldown_seconds=180,
+        )
+        scheduler.run_market_scan()
+        self.assertEqual(1, len(order_engine.exits))
+        self.assertEqual('take_profit', order_engine.exits[0][0].reason)
 
     def test_run_market_scan_uses_rest_market_data_refresher(self) -> None:
         scores = self._build_scores()

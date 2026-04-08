@@ -40,6 +40,7 @@ class SchedulerService:
     universe_refresh_interval_seconds: int = 90
     entry_pause_after_position_mismatch_seconds: int = 180
     exit_retry_cooldown_seconds: int = 180
+    take_profit_retry_cooldown_seconds: int = 30
     ma5_reentry_cooldown_seconds: int = 2700
     ma5_reentry_recovery_confirmations: int = 2
     eod_profit_lock_start_time: time = time(15, 10)
@@ -103,6 +104,7 @@ class SchedulerService:
         portfolio = self.portfolio_service.snapshot()
         refresh_request = self._build_market_data_refresh_request(self.universe_builder.symbols, portfolio)
         self._refresh_market_data(refresh_request)
+        pending_exits: list[tuple[int, object, object]] = []
         for position in portfolio.open_positions:
             snapshot = self._build_position_exit_snapshot(position)
             if snapshot is None:
@@ -115,9 +117,13 @@ class SchedulerService:
                     exit_signal = evaluate_eod_profit_lock(position, snapshot, score, now=current)
             if exit_signal is None:
                 continue
+            priority = 0 if getattr(exit_signal, 'reason', '').upper() == 'TAKE_PROFIT' else 1
+            pending_exits.append((priority, position, exit_signal))
+
+        for _, position, exit_signal in sorted(pending_exits, key=lambda item: item[0]):
             decision = self.risk_engine.can_exit(exit_signal, portfolio)
             if decision.allowed:
-                if self._should_cooldown_exit(position):
+                if self._should_cooldown_exit(position, exit_signal):
                     self._record_system_event(
                         event_type='exit_retry_cooled_down',
                         severity='INFO',
@@ -639,20 +645,22 @@ class SchedulerService:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed
 
-    def _should_cooldown_exit(self, position: object) -> bool:
+    def _should_cooldown_exit(self, position: object, exit_signal: object | None = None) -> bool:
         orders_repository = getattr(self.order_engine, 'orders_repository', None)
         if orders_repository is None:
             return False
         symbol = getattr(position, 'symbol', '')
         checker = getattr(orders_repository, 'has_recent_rejected_exit', None)
         open_finder = getattr(orders_repository, 'find_open_for_symbol', None)
+        reason = str(getattr(exit_signal, 'reason', '') or '').upper()
+        cooldown_seconds = self.take_profit_retry_cooldown_seconds if reason == 'TAKE_PROFIT' else self.exit_retry_cooldown_seconds
         try:
             if callable(open_finder):
                 open_orders = [item for item in open_finder(symbol) if getattr(item, 'side', '') == 'SELL']
                 if open_orders:
                     return True
             if callable(checker):
-                return bool(checker(symbol, within_seconds=self.exit_retry_cooldown_seconds))
+                return bool(checker(symbol, within_seconds=max(cooldown_seconds, 0)))
         except Exception:
             return False
         return False

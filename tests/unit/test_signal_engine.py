@@ -52,11 +52,20 @@ class SignalEngineExitTest(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual("ma5_breakdown", signal.reason)
 
-    def test_stale_snapshot_blocks_price_based_exit(self) -> None:
+    def test_stale_snapshot_still_allows_price_based_stop_loss(self) -> None:
         position = Position(symbol="005930", qty=1, avg_entry_price=100.0, opened_at=datetime.now(timezone.utc).isoformat())
         snapshot = MarketSnapshot(symbol="005930", price=98.0, ma5=101.0, is_stale=True)
         signal = self.engine.evaluate_exit(position, snapshot)
-        self.assertIsNone(signal)
+        self.assertIsNotNone(signal)
+        self.assertEqual("stop_loss", signal.reason)
+
+    def test_stale_snapshot_still_allows_price_based_take_profit(self) -> None:
+        position = Position(symbol="005930", qty=1, avg_entry_price=100.0, opened_at=datetime.now(timezone.utc).isoformat())
+        snapshot = MarketSnapshot(symbol="005930", price=104.5, ma5=103.0, is_stale=True)
+        signal = self.engine.evaluate_exit(position, snapshot)
+        self.assertIsNotNone(signal)
+        self.assertEqual("take_profit", signal.reason)
+        self.assertEqual(104.5, signal.price)
 
     def test_ma5_breakdown_requires_indicator_ready(self) -> None:
         position = Position(symbol="005930", qty=1, avg_entry_price=100.0, opened_at=datetime.now(timezone.utc).isoformat())
