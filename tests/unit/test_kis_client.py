@@ -37,6 +37,7 @@ def build_settings() -> Settings:
         universe_master_path=Path("data/universe_master.csv"),
         holiday_calendar_path=Path("data/krx_holidays.csv"),
         holiday_api_service_key="",
+        rest_min_interval_seconds=0.12,
         telegram_bot_token="",
         telegram_chat_id="",
     )
@@ -92,6 +93,51 @@ class KISClientTest(unittest.TestCase):
         client = StubKISClient(settings, [{"access_token": "issued-token"}])
         token = client._ensure_access_token()
         self.assertEqual("issued-token", token)
+
+
+    @patch("urllib.request.urlopen")
+    def test_request_json_retries_once_when_token_is_expired(self, mock_urlopen: MagicMock) -> None:
+        expired_response = MagicMock()
+        expired_response.read.return_value = json.dumps({
+            "rt_cd": "1",
+            "msg1": "기간이 만료된 token 입니다.",
+        }).encode("utf-8")
+        expired_response.__enter__.return_value = expired_response
+
+        issue_token_response = MagicMock()
+        issue_token_response.read.return_value = json.dumps({
+            "access_token": "fresh-token"
+        }).encode("utf-8")
+        issue_token_response.__enter__.return_value = issue_token_response
+
+        success_response = MagicMock()
+        success_response.read.return_value = json.dumps({
+            "rt_cd": "0",
+            "output": {"value": 1}
+        }).encode("utf-8")
+        success_response.__enter__.return_value = success_response
+
+        mock_urlopen.side_effect = [expired_response, issue_token_response, success_response]
+
+        settings = build_settings()
+        settings.kis_access_token = "stale-token"
+        client = KISClient(settings)
+
+        data = client._request_json(method="GET", path="/test")
+
+        self.assertEqual("0", data["rt_cd"])
+        self.assertEqual("fresh-token", client._access_token)
+        self.assertEqual(3, mock_urlopen.call_count)
+        first_headers = {str(k).lower(): v for k, v in mock_urlopen.call_args_list[0].args[0].header_items()}
+        second_headers = {str(k).lower(): v for k, v in mock_urlopen.call_args_list[2].args[0].header_items()}
+        self.assertEqual("Bearer stale-token", first_headers.get("authorization"))
+        self.assertEqual("Bearer fresh-token", second_headers.get("authorization"))
+
+    def test_should_retry_for_expired_token_message(self) -> None:
+        client = KISClient(build_settings())
+        self.assertTrue(client._should_retry_for_expired_token({"msg1": "기간이 만료된 token 입니다."}, use_authorization=True, allow_auth_retry=True))
+        self.assertFalse(client._should_retry_for_expired_token({"msg1": "ok"}, use_authorization=True, allow_auth_retry=True))
+        self.assertFalse(client._should_retry_for_expired_token({"msg1": "기간이 만료된 token 입니다."}, use_authorization=False, allow_auth_retry=True))
 
     @patch("urllib.request.urlopen")
     def test_request_json_raises_for_invalid_json(self, mock_urlopen: MagicMock) -> None:

@@ -325,6 +325,7 @@ class KISClient:
         body: dict[str, Any] | None = None,
         use_hashkey: bool = False,
         use_authorization: bool = True,
+        allow_auth_retry: bool = True,
     ) -> dict[str, Any]:
         url = f"{self.settings.kis_base_url.rstrip('/')}{path}"
         if params:
@@ -343,15 +344,40 @@ class KISClient:
             with request.urlopen(req, timeout=self.timeout) as response:
                 response_text = response.read().decode("utf-8")
                 try:
-                    return json.loads(response_text)
+                    data = json.loads(response_text)
                 except json.JSONDecodeError as exc:
                     raise BrokerResponseError(f"Invalid JSON response from broker API: {path}") from exc
+                if self._should_retry_for_expired_token(data, use_authorization=use_authorization, allow_auth_retry=allow_auth_retry):
+                    self._access_token = self._renew_access_token()
+                    return self._request_json(
+                        method=method,
+                        path=path,
+                        tr_id=tr_id,
+                        params=params,
+                        body=body,
+                        use_hashkey=use_hashkey,
+                        use_authorization=use_authorization,
+                        allow_auth_retry=False,
+                    )
+                return data
         except error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             try:
                 data = json.loads(error_body)
             except json.JSONDecodeError:
                 raise BrokerApiError(f"Broker API HTTP error {exc.code}: {error_body}") from exc
+            if self._should_retry_for_expired_token(data, use_authorization=use_authorization, allow_auth_retry=allow_auth_retry):
+                self._access_token = self._renew_access_token()
+                return self._request_json(
+                    method=method,
+                    path=path,
+                    tr_id=tr_id,
+                    params=params,
+                    body=body,
+                    use_hashkey=use_hashkey,
+                    use_authorization=use_authorization,
+                    allow_auth_retry=False,
+                )
             return data
         except error.URLError as exc:
             raise BrokerApiError(f"Broker API connection error for {path}: {exc.reason}") from exc
@@ -394,6 +420,12 @@ class KISClient:
         self._access_token = self._issue_access_token()
         return self._access_token
 
+
+    def _renew_access_token(self) -> str:
+        if self.settings.kis_refresh_token:
+            return self._refresh_access_token()
+        return self._issue_access_token()
+
     def _issue_access_token(self) -> str:
         data = self._request_json(
             method="POST",
@@ -428,6 +460,31 @@ class KISClient:
         if isinstance(token, str):
             return token
         return ""
+
+    @staticmethod
+    def _is_expired_token_message(message: str) -> bool:
+        normalized = str(message or "").strip().lower()
+        if not normalized:
+            return False
+        return (
+            "expired token" in normalized
+            or "token expired" in normalized
+            or ("token" in normalized and "expired" in normalized)
+            or "기간이 만료된 token" in normalized
+            or ("token" in normalized and "만료" in normalized)
+        )
+
+    def _should_retry_for_expired_token(
+        self,
+        data: dict[str, Any],
+        *,
+        use_authorization: bool,
+        allow_auth_retry: bool,
+    ) -> bool:
+        if not use_authorization or not allow_auth_retry or not isinstance(data, dict):
+            return False
+        message = str(data.get("msg1", "") or data.get("message", "") or "")
+        return self._is_expired_token_message(message)
 
     def _get_hashkey(self, body: dict[str, Any]) -> str:
         data = self._request_json(
